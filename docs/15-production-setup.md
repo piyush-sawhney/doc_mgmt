@@ -437,6 +437,7 @@ almost everything.
 | Install, start, or patch PostgreSQL | The operator (`10` ADR-031) |
 | Apply Windows or Linux security updates | The operator |
 | Install or patch LibreOffice | The operator, only if Office intake is wanted |
+| Install Node.js | Not needed. The installer ships the already-built frontend (`02` §7). |
 | Rotate backups or take them off-site | The office |
 | Configure disk encryption or store its recovery key | The operator |
 | Provide a UPS or test it | The office |

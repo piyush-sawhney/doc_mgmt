@@ -209,6 +209,7 @@ future reader can tell whether a pin is stale. Re-check it every quarter (§6.2)
 | **cryptography** | `50.0.2` | 2026-09-30 | Current stable; no open advisories affecting AES-GCM, HKDF, or HMAC |
 | **argon2-cffi** | `25.1.0` | 2025-06-03 | Still current. Its bindings package is `26.1.0` and updates separately. |
 | **Node.js** | `24.22.1` (LTS "Krypton") | 2026-10-20 | Build-time only. Node 26.12.1 reaches LTS on 2026-10-28; adopt it after a bake period under §6.2. Node 24 is supported to April 2028. |
+| **npm** | `11.x`, bundled with Node 24.22.1 | — | Ships with Node. Pin it through the Node version, never with a separate global install. |
 | **React / React DOM** | `19.3.1` | 2026-10-14 | Latest 19.x. React 20 has not been announced. |
 | **TypeScript** | `7.0.2` | 2026-07-08 | Native compiler, stable for over three months. Fall back to `6.0.2` only if a build tool misbehaves; 7.1 is beta. |
 | **Vite** | `8.3.5` | 2026-10-21 | The Rolldown-based Vite 8. Vite 6.4.x is the maintenance line, not the default. |
@@ -325,6 +326,7 @@ flowchart LR
 
 ```
 doc_mgmt/
+├── .nvmrc                     # pinned Node version for the frontend
 ├── docs/                      # this documentation set
 ├── config/
 │   └── dev.toml.example       # development configuration template

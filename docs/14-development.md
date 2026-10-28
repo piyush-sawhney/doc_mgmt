@@ -31,8 +31,8 @@ careless with its own data. Production is not careless with anything.
 |---|---|---|
 | **Git** | Current | Source control |
 | **Python** | **3.14.x** (3.14.10 at the time of writing) | Backend. The same minor as production. |
-| **Node.js** | **24.x** (24.22.1) | Frontend build and dev server |
-| **npm** | The one bundled with Node 24 | Frontend dependencies |
+| **Node.js** | **24.x** (24.22.1) | Frontend build and dev server only; not needed on the production host |
+| **npm** | **11.x**, bundled with Node 24 | Frontend dependencies. Do not install it separately. |
 | **PostgreSQL** | **18.x**, including `initdb`, `pg_ctl`, `pg_dump`, `pg_restore` | Same major as production (`02` §6.3) |
 | **LibreOffice** | Optional, current | Only to test DOC/DOCX/ODT intake |
 | **uv** | Optional, current | Runs Python tools without polluting the venv (`§9`) |
@@ -72,15 +72,72 @@ Use the versions in `02` §6.1, not "whatever the package manager has today".
 ```bash
 # Debian/Ubuntu example — substitute your distribution's package names
 sudo apt install git python3.14 python3.14-venv postgresql-18 postgresql-client-18
-# Node 24 from NodeSource or nvm; then:
-node --version    # v24.x
-npm --version
 psql --version    # 18.x
 pg_dump --version # 18.x or newer
 ```
 
 Check that `pg_dump` is **not older** than the server. A client older than the server is the most
 common upgrade failure (`08` §2.2).
+
+**Node.js and npm.** Node is needed for the frontend only. Production serves the already-built
+files, so the office host does not need Node at all (`15` §5).
+
+The project pins **Node 24.22.1**, which bundles **npm 11.x**. Pick one installation method:
+
+```bash
+# Option A — nvm, per user, no sudo (recommended)
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.8/install.sh | bash
+# Open a new shell, then:
+nvm install 24.22.1
+nvm use 24.22.1
+nvm alias default 24.22.1
+```
+
+```bash
+# Option B — NodeSource, system-wide
+curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
+sudo apt install -y nodejs
+```
+
+Option B installs the newest 24.x patch, which may be newer than 24.22.1. Either use nvm for the
+exact pin, or record the accepted version and update `02` §6.1 deliberately; do not let two
+developers run different patches by accident.
+
+If your policy does not allow piping a remote script into a shell, download it, read it, then run
+it. Both scripts run with your privileges.
+
+The repository contains a `.nvmrc`, so after the first install `nvm use` selects the right version
+without arguments.
+
+On Windows, install the **24.22.1** MSI from nodejs.org, or:
+
+```powershell
+winget install -e --id OpenJS.NodeJS.LTS
+```
+
+Tick "Add to PATH" if the MSI offers it, then open a **new** terminal.
+
+Verify the pair together, because a correct `node` with an old `npm` is still a broken setup:
+
+```bash
+node --version   # v24.22.1
+npm --version    # 11.x
+command -v node  # the nvm path if you chose Option A
+```
+
+Rules that save time later:
+
+| Rule | Why |
+|---|---|
+| **Do not install npm separately** | It ships with Node; a second copy drifts from the runtime |
+| **Never run `npm` with `sudo`** | Root-owned files in `node_modules` cause permission errors that look like bugs |
+| **Use `npm ci`, not `npm install`** | `ci` installs exactly the committed lockfile and never edits it |
+| **Keep one Node major** | Vite and TypeScript are pinned to a version that supports 24.x |
+| **No Node in production** | The built bundle is static files served by FastAPI (`02` §7) |
+
+If the development machine is offline, populate the npm cache from a connected machine or vendor
+the tarballs. The application runtime never needs npm, and the offline test still fails the build
+on unexpected egress (`02` §10).
 
 ### 4.2 Clone and create the Python environment
 
@@ -184,8 +241,8 @@ npm ci
 cd ..
 ```
 
-`npm ci` uses the committed lockfile. Do not use `npm install` for a clean setup; it can update the
-lockfile by accident.
+If `node --version` is not `v24.22.1`, run `nvm use` before `npm ci`. `npm ci` uses the committed
+lockfile. Do not use `npm install` for a clean setup; it can update the lockfile by accident.
 
 Start the API in one terminal:
 
@@ -213,7 +270,7 @@ The shape is identical; the commands differ.
 | Task | Windows |
 |---|---|
 | Python | Install 3.14 from python.org, tick "Add to PATH" |
-| Node | Install 24.x from nodejs.org |
+| Node and npm | Install **24.22.1** from nodejs.org, or `winget install -e --id OpenJS.NodeJS.LTS`; npm is bundled. Open a new terminal afterwards. |
 | PostgreSQL | Install 18.x with the EDB installer; note `C:\Program Files\PostgreSQL\18\bin` |
 | Throwaway cluster | `initdb -D var\pg -U postgres --auth=trust --encoding=UTF8` then `pg_ctl -D var\pg -o "-p 5433" start` |
 | Config | `$env:DOCVAULT_CONFIG = "$PWD\config\dev.toml"` |
@@ -511,6 +568,10 @@ OpenCode and sign in there; do not paste an API key into a config file.
 | Preview says "Could not render" | The worker crashed or hit a limit | Read the worker exit reason in the log; the document is intact |
 | `SCHEMA_TOO_NEW` | A branch with older code met a newer database | Re-run the branch's migrations, or reset the dev vault |
 | Import error after switching branches | The venv has stale editable installs | `pip install -e "backend[dev]"` again |
+| `node: command not found` after installing | The shell has not reloaded its PATH | Open a new terminal, or `source ~/.nvm/nvm.sh` |
+| Vite refuses to start, or `EBADENGINE` | The wrong Node major is active | `nvm use`; check `node --version` is 24.22.1 |
+| `npm ERR! EACCES` | npm was run with `sudo`, or a system Node owns the cache | Use nvm, remove the root-owned `node_modules`, and reinstall without sudo |
+| `npm ci` fails with a lockfile mismatch | The lockfile was edited or generated by another npm major | Restore `package-lock.json` from the repository; do not regenerate it casually |
 | Frontend types fail only in CI | `node_modules` is stale | `npm ci`, not `npm install` |
 
 When in doubt, `docvault doctor` reports the environment one check at a time, with the fix in the
