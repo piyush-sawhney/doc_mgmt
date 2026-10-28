@@ -63,6 +63,7 @@ How to read the reversal cost:
 | 040 | Categories are a two-level `doc_types` tree, not folders | Every document has one type, and every type belongs to one category | Accepted | cheap |
 | 041 | Sensitivity changes policy, never storage | There is no unencrypted tier, at any level | Accepted | expensive |
 | 042 | TIFF is not an accepted format | PDF already covers multi-page and bilevel scans | Accepted | cheap |
+| 043 | Development runs the same PostgreSQL major and code paths as production | No SQLite or mocked database; a throwaway cluster, but the real schema | Accepted | cheap |
 
 ---
 
@@ -492,6 +493,23 @@ display TIFF without a decoder, and the print composer would need a re-encode st
 system (ADR-039). A scanner must be configured to emit PDF or JPEG/PNG. Any existing TIFF scan is
 converted once, outside the app, before upload (`08` §10).
 
+### ADR-043 — Development runs the same PostgreSQL major and code paths as production
+**Decision.** A development machine runs PostgreSQL 18, the same `citext`, `jsonb`, triggers, and
+partial indexes as the office. It uses a disposable cluster on port 5433 and a disposable vault
+under `var/`, but it does not substitute a different database, a mocked repository, or a container
+that hides filesystem behaviour. Schema and permission tests run against the real thing.
+**Rejected.** SQLite for convenience. Half the schema would not exist, `jsonb` queries would be
+different, and a passing test would prove nothing about the code that ships (`14` §2).
+**Rejected.** A shared development database on the office server. It mixes test data with records,
+exposes PostgreSQL beyond loopback, and makes a destructive test everyone's problem.
+**Rejected.** Docker Compose as the default development path. The production platform is Windows
+with a native filesystem, and the vault's correctness depends on atomic rename and fsync
+(`03` §7). A container hides exactly the behaviour worth testing.
+**Consequence.** Setup is heavier than `pip install` plus SQLite: a developer installs PostgreSQL
+and creates one cluster (`14` §4.3). In exchange, the first place a schema bug appears is the
+developer's machine, not the office. The development vault is explicitly disposable and must never
+hold production data.
+
 ---
 
 ## 3. Ideas we considered and dropped
@@ -524,6 +542,8 @@ converted once, outside the app, before upload (`08` §10).
 | An "unencrypted" tier for sensitive documents | Every document stays ciphertext; sensitivity changes policy only (ADR-041) |
 | Accepting TIFF | PDF covers multi-page and bilevel; each extra decoder is attack surface (ADR-042) |
 | Automatic classification by document content | Needs OCR and a guess; a wrong guess about a share certificate is worse than a click (`13` §10) |
+| SQLite or a mocked repository for development | It would test a different schema and hide filesystem bugs (ADR-043) |
+| Running development against the office database | It mixes synthetic and real data, and widens database exposure (ADR-043) |
 
 ---
 

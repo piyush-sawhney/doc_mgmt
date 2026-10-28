@@ -1,0 +1,38 @@
+# DocVault development configuration.
+#
+# Copy this file to config/dev.toml and edit the paths for your machine.
+# config/dev.toml is git-ignored because it holds absolute paths, not secrets.
+# No passphrase, password, or token belongs in this file.
+
+environment = "development"
+
+[server]
+bind = "127.0.0.1"
+port = 8443
+
+[vault]
+# `docvault init --vault <path>` writes the absolute vault path here.
+root = ""
+# Development keeps the passphrase in memory only; see docs/15 §6.3.
+auto_unlock = false
+
+[database]
+# A throwaway cluster on port 5433, created in docs/14 §4.3.
+# The role password is stored by the app, never in this DSN.
+dsn = "postgresql://docvault_app@127.0.0.1:5433/docvault"
+# Adjust for your PostgreSQL 18 install.
+pg_bin_dir = "/usr/lib/postgresql/18/bin"
+
+[limits]
+max_file_bytes = 52428800
+
+[render]
+# 1 GB is plenty for one developer.
+cache_bytes = 1073741824
+
+[office]
+# Empty disables DOC/DOCX/ODT intake. Set the LibreOffice executable to test it.
+convert_exe = ""
+
+[log]
+level = "debug"

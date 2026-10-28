@@ -39,6 +39,7 @@ Entries are alphabetical. "Where" points to the document that explains the idea 
 | **CSRF** (Cross-Site Request Forgery) | An attack that tricks a logged-in browser into sending a request the user did not intend. A per-session token blocks it. | `07` §2 |
 | **Category** | One of eight fixed shelves a document belongs on, such as property or legal. Derived from the document's type, never stored separately. | `13` §3 |
 | **Custodian** | A person who holds a copy of the vault passphrase. | `08` §7 |
+| **Development host** | The laptop or desktop where the code is changed. It holds only synthetic fixtures and a disposable vault. | `14` §1 |
 | **Document type** | The specific kind of paper inside a category, such as a PAN card or a sale deed. Every document has exactly one. It carries a default sensitivity. | `13` §3 |
 | **DPAPI** | The Windows data-protection interface. It encrypts a value so that only a specific machine or user account can read it back. Used here for the database password. | `08` §2.2 |
 | **Dump** | A portable copy of the whole database, produced by `pg_dump`. It lives inside the vault and is encrypted. | `03` §9 |
@@ -60,6 +61,8 @@ Entries are alphabetical. "Where" points to the document that explains the idea 
 | **`dump_key`** | The sub-key derived from the vault key that encrypts database dumps. | `05` §5.1 |
 | **Legal hold** | A flag that blocks purging a document, usually because of a dispute or investigation. | `04` §8 |
 | **Manifest** | `manifest.json` at the vault root. It records the vault's identity, format version, and key fingerprint, and it is signed. | `03` §3 |
+| **MCP server** | A separate process that exposes tools to an AI coding agent over the Model Context Protocol. It runs with your permissions, so scope it narrowly. | `14` §9 |
+| **Migration** | A versioned change to the database schema, applied once and never edited afterwards. | `04` §12 |
 | **Nonce** | A random number used once per encryption. Reusing one would break GCM, so each encryption gets a fresh one. | `05` §1 |
 | **N-up** | Placing several document pages on one printed side, in a grid. 4-up means four cells. | `12` §3 |
 | **Orphan blob** | An encrypted file on disk that no database row points to, usually left by a failed upload. | `08` §5.1 |
@@ -69,6 +72,7 @@ Entries are alphabetical. "Where" points to the document that explains the idea 
 | **Print capability** | The right to include a document in a print job. Separate from `read`. Denying `read` also removes it. | `06` §2 |
 | **Print job** | One print request: an ordered list of versions, a layout, and a record of who printed it. No file is kept. | `12` §2 |
 | **`PRINT_RESTRICTED`** | The error returned when a `restricted` document is printed without an explicit grant on that document. It means the classification is working. | `13` §6 |
+| **Production host** | The one office computer that holds the real vault. It is never a laptop that leaves the building. | `15` §1 |
 | **Purge** | Permanently removing a document's content. Admin-only, requires a prior soft delete, and is audited. | `09` §16 |
 | **Reader** | A role that can view metadata and download documents it has been granted. | `06` §3 |
 | **RPO** (Recovery Point Objective) | How much data you can afford to lose, measured in time. Here: up to 24 hours. | `08` §12 |
@@ -77,9 +81,12 @@ Entries are alphabetical. "Where" points to the document that explains the idea 
 | **Rendition** | One page of a version rendered for the screen or for print. Cached as an encrypted blob, and safe to delete. | `03` §5.1 |
 | **Render worker** | The separate process that decodes images and PDFs and builds pages. It never holds a vault key. | `02` §6.4 |
 | **Salt** | Random bytes added before hashing so identical inputs produce different outputs. | `03` §4 |
+| **Seed data** | Rows inserted by the installer or a migration: the eight categories and their document types, for example. | `08` §2.3 |
 | **Sensitivity** | How carefully a document must be handled: `normal`, `sensitive`, or `restricted`. It changes permissions and warnings, never how the file is stored. | `13` §6 |
+| **Skill** (agent skill) | A reviewed folder of Markdown instructions and optional scripts that an AI coding agent loads on demand. It guides the agent; it is not part of the application. | `14` §9 |
 | **Soft delete** | Marking a document deleted while keeping its files. Reversible. | `09` §16 |
 | **TOTP** | A six-digit code from an authenticator app, used as an optional second login step. | `07` §2 |
+| **Unlock** | Typing the vault passphrase on the host after a restart so the service can read documents. Until then, the app stays locked. | `15` §6.3 |
 | **Vault root** | The absolute path to the vault folder. It is the only absolute path stored anywhere. | `03` §13 |
 | **Version** | One uploaded file belonging to a document. | `04` §5 |
 | **VMK** (Vault Master Key) | The 32-byte root key of the vault. Everything else is derived from it. It is stored only in wrapped form. | `05` §2 |

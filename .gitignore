@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# DocVault development (docs/14)
+/var/
+/config/dev.toml

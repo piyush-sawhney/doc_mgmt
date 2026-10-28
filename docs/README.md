@@ -19,6 +19,10 @@ Pick the row that matches why you are here.
 | **Building the backend** | `02` → `03` → `04` → `05` → `06` → `07` → `13` |
 | **Building the frontend** | `11` → `13` → `07` → `06` → `09` §14 |
 | **Building the printer** | `12` → `11` §9–10 → `13` §6 → `06` §2 |
+| **Setting up a dev machine** | `14` |
+| **Installing it for an office** | `15` → `08` §2–§4 |
+| **Using it day to day** | `16` → `13` §5 |
+| **Running it day to day** | `08` → `03` §13 and `03` §14 |
 | **Running it day to day** | `08` → `03` §13 and `03` §14 |
 | **Checking the security claims** | `01` → `05` §7 → `06` §10–11 |
 | **Choosing a version to install** | `02` §6.1–6.3 |
@@ -42,6 +46,9 @@ Pick the row that matches why you are here.
 | 11 | [Frontend and Viewer](11-frontend.md) | What every screen does, and what a clerk can reach from the browser. |
 | 12 | [Printing](12-printing.md) | How a selection becomes sheets: grids, duplex, paper, page ranges, audit. |
 | 13 | [Classification](13-classification.md) | Which category and type a document goes in, and what sensitivity changes. |
+| 14 | [Development Setup](14-development.md) | How to run the app on a laptop, test it, and add safe AI tooling. |
+| 15 | [Production Setup](15-production-setup.md) | How to install it for an office, step by step, with a go-live checklist. |
+| 16 | [User Guide](16-user-guide.md) | How a clerk files, finds, shares, and prints a document. |
 
 ## The three contracts
 

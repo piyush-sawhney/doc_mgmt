@@ -6,6 +6,9 @@
 >
 > **Read this if:** you are building the React app, you are deciding what goes on a screen, or you
 > need to know what a clerk can and cannot do from the browser.
+>
+> **Using it rather than building it?** `16-user-guide.md` is the task-oriented version of this
+> page, written for staff.
 
 ---
 

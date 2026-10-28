@@ -326,6 +326,8 @@ flowchart LR
 ```
 doc_mgmt/
 ├── docs/                      # this documentation set
+├── config/
+│   └── dev.toml.example       # development configuration template
 ├── backend/
 │   ├── app/
 │   │   ├── api/               # routes, one file per resource
@@ -362,7 +364,7 @@ control described in `01` R-12, so it has to exist in the layout, not just in pr
 
 | Concern | Approach |
 |---|---|
-| **Configuration** | `docvault.toml` in the OS config folder: bind address, port, vault root, database DSN, `pg_bin_dir`, limits, log level. No secrets. |
+| **Configuration** | `docvault.toml` in the OS config folder: `environment`, bind address, port, vault root, database DSN, `pg_bin_dir`, limits, log level. No secrets. Development may point `DOCVAULT_CONFIG` at a repo-local file (`14` §4.4). |
 | **Secrets** | Vault passphrase typed at start-up, or read from an OS keyring if the operator opts in. The database password is DPAPI-encrypted on Windows and ACL'd to the service account. Neither is ever in config, environment variables, or logs. |
 | **Logging** | Structured JSON, rotating, in the OS log folder. Log IDs and counts, never titles, filenames, identifiers, or content. |
 | **Errors** | RFC 9457 `application/problem+json`. Internal errors carry a correlation ID, never a stack trace. |

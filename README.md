@@ -59,6 +59,9 @@ reason for each choice, and the update rules are in
 | [Vault format](docs/03-vault-format.md) | **The compatibility contract** |
 | [Frontend and viewer](docs/11-frontend.md) | What every screen does |
 | [Printing](docs/12-printing.md) | How a selection becomes sheets of paper |
+| [Development setup](docs/14-development.md) | Run it on a laptop, test it, add AI tooling |
+| [Production setup](docs/15-production-setup.md) | Install it for an office |
+| [User guide](docs/16-user-guide.md) | File, find, share, and print documents |
 | [Decisions](docs/10-decisions.md) | Why each choice was made, and open questions |
 
 ## The design in one picture

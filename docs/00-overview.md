@@ -204,6 +204,9 @@ Each document stands alone, but assumes the ones before it.
 | What happens when I click upload? | `09-flows.md` |
 | Why was this decided this way? | `10-decisions.md` |
 | Where does this document go, and how sensitive is it? | `13-classification.md` |
+| How do I set up a development machine? | `14-development.md` |
+| How do I install it for an office? | `15-production-setup.md` |
+| How do I use it? | `16-user-guide.md` |
 
 **The contracts, in priority order:** `03-vault-format.md` (on-disk compatibility), then
 `04-data-model.md` (schema), then `07-api.md` (client compatibility). Everything else can change
