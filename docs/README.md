@@ -94,8 +94,18 @@ illustrative sketches, not the implementation.
 
 | Area | State |
 |---|---|
-| Design documents | Draft v1, complete for review |
+| Design documents | **Final v1**, committed 2026-10-28. Ready to build from. |
 | Vault format | Frozen for v1, awaiting sign-off |
-| Threat model | Draft, needs the product owner to confirm the T2 boundary |
+| Threat model | Needs the product owner to confirm the T2 boundary (`01` §3) |
 | Code | Not started |
-| Open questions | `10-decisions.md` §4 |
+| Open questions | 13 questions with working defaults in `10-decisions.md` §4 |
+
+Two things are deliberately still open, and neither blocks the start of coding:
+
+1. **The T2 boundary** — the threat model assumes an attacker who can read the disk but not
+   administer the running host. If that is wrong, the design changes.
+2. **Version pins for the media libraries** — Pillow, pypdfium2, pypdf, and LibreOffice are pinned
+   at first install (`02` §6.1), because their release cadence is not known in advance.
+
+Everything else has a default. If the product owner answers nothing, the defaults in `10` §4 are
+what gets built.
