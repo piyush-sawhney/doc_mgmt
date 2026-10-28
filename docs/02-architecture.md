@@ -225,6 +225,11 @@ Two compatibility notes:
   `pg_dump --version` with `server_version` and refuses on skew. A distro client talking to a
   PGDG server is the most likely mismatch in practice (§6.3).
 
+Two support libraries are pinned in the lockfile but are not architecture choices, so they are
+not in the table above: `zxcvbn==4.5.0` scores passphrases for `05` §7, and
+`python-multipart==0.0.20` parses uploads for `07`. They are pinned with the rest of the backend
+dependencies in `backend/pyproject.toml`.
+
 ### 6.2 Upgrade policy
 
 | Rule | Detail |

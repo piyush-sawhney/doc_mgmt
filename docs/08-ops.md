@@ -74,8 +74,8 @@ Fixed defaults:
 | Logs | `.../docvault/logs` in the OS log folder |
 | TLS material | `.../docvault/tls` in the OS config folder, **outside the vault** |
 | Vault location | Chosen by the operator. Must be a local native disk. |
-| LibreOffice (optional) | Path in `office_convert_exe`. Required only for `doc`, `docx`, and `odt` uploads. Reported by `docvault doctor`. |
-| Rendition cache ceiling | `rendition_cache_bytes`. Default 5 GB or 10 % of the vault, whichever is smaller. |
+| LibreOffice (optional) | Path in `office.convert_exe`. Required only for `doc`, `docx`, and `odt` uploads. Reported by `docvault doctor`. |
+| Rendition cache ceiling | `render.cache_bytes`. Default 5 GB or 10 % of the vault, whichever is smaller. |
 
 > **Why TLS material lives outside the vault:** the vault gets copied to backups and other
 > machines. A server private key riding along in a backup is an unnecessary risk. A restored
@@ -395,7 +395,7 @@ documents, they are disposable.
 
 | Item | Default | Notes |
 |---|---|---|
-| Cache ceiling | 5 GB or 10 % of the vault, whichever is smaller | Configurable as `rendition_cache_bytes` |
+| Cache ceiling | 5 GB or 10 % of the vault, whichever is smaller | Configurable as `render.cache_bytes` |
 | Eviction | Nightly job, oldest `last_used_at` first | Never evicts a rendition used in the last 7 days unless the ceiling is exceeded by more than 20 % |
 | Hard floor | Evicts down to 80 % of the ceiling | Prevents thrashing at the boundary |
 | Manual clear | `docvault renditions --clear` | Always safe. Loses nothing. |
@@ -432,6 +432,7 @@ because a version that cannot be previewed or printed is a trap.
 | `VAULT_DB_MISMATCH` | Connected to the wrong database, or an empty new cluster after an OS major upgrade | Check `vault_id`. The OS upgrade may have created a new cluster; restore into the old one or re-point the DSN. |
 | `VAULT_LOCKED` | `.lock` held by another process | Find the process. If the lock is older than 30 seconds, use `--force` with confirmation. |
 | `VAULT_KEY_MISMATCH` | Correct passphrase, wrong vault folder | Check `vault_id` in `manifest.json` |
+| `AUDIT_CHAIN_BROKEN` | The newest audit line is partial or unreadable | Run `docvault verify`. Restore the last good audit folder before appending more events; never edit the chain by hand. |
 | `SCHEMA_TOO_NEW` | Older app, newer database | Install the matching app version |
 | `verify` reports a dump tag failure | Truncated or corrupted `.enc` file | Restore the previous dump. Never try to salvage a partial archive. |
 | Backup reports `DISK_FULL` | Not enough space for the encrypted dump | Free space and retry. `LATEST` still points at the last good dump. |
@@ -440,7 +441,7 @@ because a version that cannot be previewed or printed is a trap.
 | Upload returns `413` | Over `max_file_bytes` | Raise the limit deliberately, or split the file |
 | Upload returns `415` | Magic bytes look like an executable or script, the format is not allowed, or a PDF contains JavaScript | Convert or reject. Never bypass. |
 | Upload of a `.tif` or `.tiff` returns `415` | TIFF is not an accepted format (`10` ADR-042) | Convert it to PDF or PNG once, outside the app, then upload that. Change the scanner's output format. |
-| Office upload returns `415` and mentions a converter | LibreOffice is absent or not on the configured path | Install it, or set `office_convert_exe`, or ask the user to supply a PDF |
+| Office upload returns `415` and mentions a converter | LibreOffice is absent or not on the configured path | Install it, or set `office.convert_exe`, or ask the user to supply a PDF |
 | Preview shows "Could not render" | The worker crashed, timed out, or rejected the file | Check the log for the worker exit reason. The document itself is intact; download it to confirm. |
 | Preview is slow on first open only | Cold rendition cache | Expected. A second open is fast. If it is never fast, check disk throughput. |
 | Print returns `504` | Job exceeded 120 s or 500 pages | Split the job. The limit exists so a bad request cannot stall the office. |
@@ -450,7 +451,7 @@ because a version that cannot be previewed or printed is a trap.
 | Print PDF opens but pages are wrong | Fit mode, margins, or cells differ from what was expected | The dialog previews the real PDF (`11` §10). Re-check the layout tab, not the browser's scaling. |
 | Printed output is scaled despite "actual size" | The browser or driver applied fit-to-page | Set scaling to 100 % / Actual size in the printer dialog. The PDF is already the right size. |
 | Duplex comes out single-sided | The printer dialog was left on simplex, or the driver ignored the setting | The PDF is front, back, front, back. Set duplex in the printer dialog. |
-| Rendition cache fills the disk | Ceiling too high, or a very large vault | Lower `rendition_cache_bytes`; run `docvault renditions --clear`. No document is lost. |
+| Rendition cache fills the disk | Ceiling too high, or a very large vault | Lower `render.cache_bytes`; run `docvault renditions --clear`. No document is lost. |
 | List pages are slow | Large visible set or an expensive permission join | Check the query plan. See `06` §6 for the visibility check and indexing. |
 | `verify` reports orphans after restore | A stale dump restored over current blobs | Expected. Reconcile, or restore a matching dump and folder pair. |
 | The client shows a certificate warning | CA not imported, or the certificate was regenerated | Re-import the CA and compare the fingerprint |

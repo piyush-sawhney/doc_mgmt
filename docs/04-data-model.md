@@ -561,7 +561,7 @@ passphrase at all.
 | document_versions | 55,000 | 300,000 |
 | acl_entries | 25,000 | 120,000 |
 | audit_events | 1.5 million | 7 million |
-| renditions | 400,000 rows, ~2–5 GB cached | bounded by `rendition_cache_bytes`, not by age |
+| renditions | 400,000 rows, ~2–5 GB cached | bounded by `render.cache_bytes`, not by age |
 | print_jobs | 12,000 | 60,000 |
 
 `renditions` is the only table whose size is capped rather than growing with the archive, because

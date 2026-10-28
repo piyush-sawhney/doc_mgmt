@@ -1,0 +1,92 @@
+[build-system]
+requires = ["setuptools>=80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "docvault"
+version = "0.1.0"
+description = "Encrypted, offline document management and printing for a small office"
+requires-python = ">=3.14,<3.15"
+license = { text = "Proprietary" }
+authors = [{ name = "DocVault" }]
+dependencies = [
+  # Pins follow docs/02 §6.1. Changing one is a deliberate act.
+  "fastapi==0.162.0",
+  "pydantic==2.14.1",
+  "sqlalchemy==2.1.6",
+  "alembic==1.20.1",
+  "psycopg[binary]==3.3.6",
+  "cryptography==50.0.2",
+  "argon2-cffi==25.1.0",
+  "uvicorn==0.54.0",
+  "python-multipart==0.0.20",
+  "zxcvbn==4.5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "httpx==0.28.1",
+  "mypy==1.18.2",
+  "pytest==8.4.2",
+  "pytest-asyncio==1.2.0",
+  "pytest-cov==7.0.0",
+  "ruff==0.14.0",
+]
+
+[project.scripts]
+docvault = "app.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*", "worker*"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+src = ["."]
+
+[tool.ruff.lint]
+select = [
+  "E", "W", "F", "I", "UP", "B", "BLE", "SIM", "PTH", "S",
+  "T20", "RUF", "ASYNC", "C4", "DTZ", "PT", "RET", "ARG", "PL",
+]
+ignore = [
+  # Typer/CLI printing is the program's output, not debugging.
+  "T20",
+  # Password prompts and subprocess calls are deliberate at the boundary.
+  "S603", "S607",
+  # The CLI is a process boundary; argparse errors are user-facing.
+  "PLR2004",
+  # Data-model helpers mirror the documented field lists; keyword-only
+  # arguments are clearer there than a bag of objects.
+  "PLR0913",
+  "PLR0911",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "PLR2004", "S105", "S106", "ARG001", "ARG002"]
+"app/cli.py" = ["T20"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+warn_unreachable = true
+disallow_any_unimported = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["zxcvbn", "zxcvbn.*", "argon2", "argon2.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config"]
+filterwarnings = ["error", "ignore::DeprecationWarning:zxcvbn.*"]
+markers = [
+  "integration: needs a real PostgreSQL 18 cluster",
+]

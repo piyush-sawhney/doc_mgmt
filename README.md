@@ -5,8 +5,8 @@ people use it from browsers on the local network. Every document is encrypted on
 whole installation is a single folder, so a backup is a folder copy and recovery is a restore
 onto new hardware.
 
-> **Status: design phase.** There is no application code yet. The documents in [`docs/`](docs/)
-> are the deliverable at this stage.
+> **Status: backend in progress.** The design documents in [`docs/`](docs/) are the specification.
+> [`docs/17-implementation.md`](docs/17-implementation.md) records what is built and tested today.
 
 ---
 
@@ -62,6 +62,7 @@ reason for each choice, and the update rules are in
 | [Development setup](docs/14-development.md) | Run it on a laptop, test it, add AI tooling |
 | [Production setup](docs/15-production-setup.md) | Install it for an office |
 | [User guide](docs/16-user-guide.md) | File, find, share, and print documents |
+| [Implementation status](docs/17-implementation.md) | What is built, tested, and next |
 | [Decisions](docs/10-decisions.md) | Why each choice was made, and open questions |
 
 ## The design in one picture

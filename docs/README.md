@@ -1,7 +1,8 @@
 # DocVault — Documentation
 
 Design documentation for an offline, encrypted document management application for a small
-office. **No code exists yet.** These documents are the specification.
+office. **These documents are the specification.** The backend is being built against them; see
+[Implementation Status](17-implementation.md) for what exists today.
 
 New to the project? Read [the glossary](glossary.md) first. It defines every technical word in
 plain language and takes about ten minutes.
@@ -23,8 +24,8 @@ Pick the row that matches why you are here.
 | **Installing it for an office** | `15` → `08` §2–§4 |
 | **Using it day to day** | `16` → `13` §5 |
 | **Running it day to day** | `08` → `03` §13 and `03` §14 |
-| **Running it day to day** | `08` → `03` §13 and `03` §14 |
 | **Checking the security claims** | `01` → `05` §7 → `06` §10–11 |
+| **Checking what is built** | `17` → the contract the slice touches |
 | **Choosing a version to install** | `02` §6.1–6.3 |
 
 ## Documents
@@ -49,6 +50,7 @@ Pick the row that matches why you are here.
 | 14 | [Development Setup](14-development.md) | How to run the app on a laptop, test it, and add safe AI tooling. |
 | 15 | [Production Setup](15-production-setup.md) | How to install it for an office, step by step, with a go-live checklist. |
 | 16 | [User Guide](16-user-guide.md) | How a clerk files, finds, shares, and prints a document. |
+| 17 | [Implementation Status](17-implementation.md) | What is built, what is tested, and what the next slices are. |
 
 ## The three contracts
 
@@ -104,7 +106,7 @@ illustrative sketches, not the implementation.
 | Design documents | **Final v1**, committed 2026-10-28. Ready to build from. |
 | Vault format | Frozen for v1, awaiting sign-off |
 | Threat model | Needs the product owner to confirm the T2 boundary (`01` §3) |
-| Code | Not started |
+| Code | **Backend vault slice in progress**; see [17](17-implementation.md) |
 | Open questions | 13 questions with working defaults in `10-decisions.md` §4 |
 
 Two things are deliberately still open, and neither blocks the start of coding:
