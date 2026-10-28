@@ -76,6 +76,18 @@ ERROR_SPECS: dict[str, ErrorSpec] = {
         "pg_dump is older than the server.",
         "Use the client tools shipped with PostgreSQL 18.",
     ),
+    "SEED_CONFLICT": ErrorSpec(
+        "Seeded catalogue conflict",
+        409,
+        "A seeded code already exists with a different position in the type tree.",
+        "Rename or remove the conflicting row, then run the seed again.",
+    ),
+    "SEED_FAILED": ErrorSpec(
+        "Seeded catalogue could not be written",
+        500,
+        "The document-type catalogue could not be inserted.",
+        "Check the database permissions and run the seed again.",
+    ),
     "SCHEMA_TOO_NEW": ErrorSpec(
         "Database schema is newer than the application",
         503,

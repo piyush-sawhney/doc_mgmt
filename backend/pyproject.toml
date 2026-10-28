@@ -66,6 +66,9 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "PLR2004", "S105", "S106", "ARG001", "ARG002"]
 "app/cli.py" = ["T20"]
+# One revision legitimately contains many DDL statements; splitting it would
+# make the migration harder to read and to roll back.
+"migrations/**" = ["PLR0915"]
 
 [tool.ruff.format]
 quote-style = "double"

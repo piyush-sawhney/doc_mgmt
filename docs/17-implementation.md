@@ -33,7 +33,7 @@ Last updated: **2026-10-28**, application version **0.1.0**.
 |---|---|---|
 | Design documents | **Done** | `docs/00`–`16` plus glossary and two READMEs |
 | Backend foundation | **Partial** | Vault creation, crypto, lock, audit, health, CLI |
-| Database schema and migrations | **Not started** | No models, no Alembic revision, no seed catalogue |
+| Database schema and migrations | **Done** | 24 models, Alembic revision `c02412ca4b8b`, triggers D-1–D-16, seed catalogue |
 | Database provisioning and dumps | **Not started** | `init` creates the vault and TLS only |
 | Authentication, sessions, ACL enforcement | **Not started** | No login endpoint, no permission gate |
 | Entities, documents, versions, upload/download | **Not started** | No tables and no routes |
@@ -42,12 +42,13 @@ Last updated: **2026-10-28**, application version **0.1.0**.
 | Frontend | **Not started** | No `frontend/`; Node and npm are not installed on this dev host |
 | Packaging and Windows install | **Not started** | No PyInstaller spec, MSI, or service unit |
 | Unit tests | **Done for current code** | **67 passed** on 2026-10-28 |
-| Integration tests | **Not started** | The marker and empty package exist; there are no PostgreSQL fixtures |
+| Integration tests | **Done for the schema slice** | **33 passed** against PostgreSQL 18.6 on 2026-10-28 |
 | Lint and type checks | **Passing** | `ruff check backend`, `mypy app` (run from `backend/`) |
 
-The current build is a **vertical slice of the vault, not of the product**. It can create a vault,
-protect it with a passphrase, take the single-writer lock, verify the audit chain, and answer
-liveness and readiness. It cannot yet store a document.
+The current build is a **vertical slice of the vault and its schema, not of the product**. It can
+create a vault, protect it with a passphrase, take the single-writer lock, verify the audit chain,
+create and migrate the database, seed the document-type catalogue, and answer liveness and
+readiness. It cannot yet store a document.
 
 ## 3. What runs today
 
@@ -118,14 +119,19 @@ Everything else in [07](07-api.md) is design, not code.
 ```bash
 cd backend
 ../.venv/bin/pytest tests/unit -q
+../.venv/bin/pytest tests/integration -q      # needs the 5433 cluster
+../.venv/bin/pytest -q                        # everything
 ../.venv/bin/mypy app
 
 cd ..
 .venv/bin/ruff check backend
 ```
 
-`mypy` must run from `backend/` so `pyproject.toml` supplies the strict configuration. The
-`pytest` run uses temporary directories only; no test touches a real vault or a database.
+`mypy` must run from `backend/` so `pyproject.toml` supplies the strict configuration. The unit
+tests use temporary directories only; no test touches a real vault. The integration tests create a
+fresh database per test on the throwaway PostgreSQL 18 cluster, migrate it with Alembic, and drop
+it afterwards. Set `DOCVAULT_TEST_PG_DSN` to use a different admin connection. Nothing is mocked
+and SQLite is never used ([14 §8](14-development.md)).
 
 ## 4. Component status
 
@@ -168,15 +174,26 @@ cd ..
 | `app/api/health.py` | [07 §1](07-api.md) | **Done** | `/healthz` and `/readyz` |
 | `app/main.py` | [02 §8](02-architecture.md) | **Partial** | App factory and lifespan; only the health router is mounted |
 | `app/cli.py` | [08 §1](08-ops.md) | **Partial** | `init`, `status`, `doctor`, `unlock`, `lock`, `serve`. Backup, restore, verify, migrate, rotate, salvage, and user commands are absent |
-| `app/db/` | [04](04-data-model.md) | **Not started** | No models, repositories, migrations, or seed catalogue |
 | `app/services/` | [06](06-rbac-acl.md) | **Not started** | The single permission gate does not exist yet |
 | `app/render/`, `app/print/`, `app/jobs/` | [11](11-frontend.md), [12](12-printing.md), [08 §1](08-ops.md) | **Not started** | — |
 | `worker/` | [02 §8](02-architecture.md) | **Not started** | The package name is reserved in `pyproject.toml`; no entry point exists |
 | `frontend/` | [11](11-frontend.md) | **Not started** | Node and npm are absent on this development host |
 
+### 4.5 Database
+
+| Module | Design reference | State | Notes |
+|---|---|---|---|
+| `app/db/base.py` | [04 §1](04-data-model.md) | **Done** | Declarative base, naming convention, `citext`/enum helpers, shared regex constants |
+| `app/db/enums.py` | [04 §3–7](04-data-model.md) | **Done** | Native PostgreSQL enums and the six capability bits (`print = 32`) |
+| `app/db/models/` | [04](04-data-model.md) | **Done** | All 24 tables, constraints, partial indexes, deferred FK for `current_version_id` |
+| `migrations/` | [04 §12](04-data-model.md), [14 §7](14-development.md) | **Done** | Alembic scaffold, DSN from `-x dsn=`/`DOCVAULT_DSN`, revision `c02412ca4b8b`, triggers D-1–D-16, clean downgrade |
+| `app/db/seed.py` | [13 §4](13-classification.md) | **Done** | 8 categories, 73 types, encrypted names, `side` hints, idempotent, refuses a reparented code with `SEED_CONFLICT` |
+| Repositories and query layer | [04](04-data-model.md) | **Not started** | The schema is the contract; no query code exists yet |
+| `docvault migrate` wiring | [08 §2](08-ops.md) | **Not started** | The migration and seed are runnable; the CLI command arrives with S2 |
+
 ## 5. Test evidence
 
-### 5.1 Current suite
+### 5.1 Unit suite — 67 passed
 
 | File | What it proves |
 |---|---|
@@ -190,10 +207,21 @@ cd ..
 | `test_init.py` | Vault identity, second-init refusal, weak passphrase refusal, unlock, wrong-passphrase audit, status without unlock, lock release |
 | `test_http.py` | `/healthz`, locked `/readyz`, ready `/readyz`, request-ID echo, problem documents, unknown route |
 
-The suite is deliberately unit-level. It proves the crypto and filesystem contracts that are
-cheapest to get wrong, not that the product works end to end.
+The unit suite is deliberately at the crypto and filesystem boundary. It proves the contracts
+that are cheapest to get wrong, not that the product works end to end.
 
-### 5.2 Manually verified on 2026-10-28
+### 5.2 Integration suite — 33 passed
+
+Every test creates a fresh database on the PostgreSQL 18.6 throwaway cluster, runs the Alembic
+migration, and drops the database. The fixture skips, rather than falls back to SQLite, when the
+cluster is absent.
+
+| File | What it proves |
+|---|---|
+| `test_schema.py` | All 24 tables exist; downgrade empties the schema and upgrade restores it; native enums; capability masks (`print` requires `read`, mask ≤ 63); ACL trigger rejects deleted objects and unknown subjects; two-level `doc_types`; `version_count`; `current_version_id` ownership; version immutability; append-only audit (`UPDATE`/`DELETE`/`TRUNCATE`); legal-hold and delete-before-purge guards; deferred `self`-link rule; `updated_at` trigger; `settings` value/`value_enc` exclusivity; partial indexes |
+| `test_seed.py` | 8 categories and 73 types; every type has a category; idempotent second run; renamed type survives; names are encrypted; front/back `side` hints; defaults match [13 §4](13-classification.md); a reparented code raises `SEED_CONFLICT` |
+
+### 5.3 Manually verified on 2026-10-28
 
 A fresh development vault was created under `/tmp`, then inspected:
 
@@ -203,7 +231,10 @@ A fresh development vault was created under `/tmp`, then inspected:
   S2.
 - `unlock` accepted the passphrase, verified the manifest, and released the lock on exit.
 
-### 5.3 Not yet tested
+The schema was also checked by hand on `docvault_migrate` on port 5433: upgrade, downgrade to
+base, and upgrade again; `alembic check` reports **No new upgrade operations detected**.
+
+### 5.4 Not yet tested
 
 | Gap | Consequence |
 |---|---|
@@ -212,7 +243,7 @@ A fresh development vault was created under `/tmp`, then inspected:
 | Large streamed uploads and disk-full behaviour | The streaming writer is tested with 9 KB, not a 100 MB document |
 | Crash injection during `init`, blob write, or dump | Cleanup paths are reasoned about, not fault-injected |
 | TLS handshake with a real client | Certificates are generated and fingerprinted, not used by a browser |
-| Any PostgreSQL behaviour | No schema or query exists |
+| Query behaviour under load | The schema is tested; there are no queries, repositories, or volume tests yet |
 | Frontend | No code |
 
 ## 6. Deviations and open gaps
@@ -225,7 +256,7 @@ allowed only while this table says so; a gap without a slice is a defect.
 | IMP-01 | `docvault init` provisions the role, database, schema, seed catalogue, and first dump ([08 §2](08-ops.md), [09 §1](09-flows.md)) | Creates the vault and TLS only; prints that the database is not provisioned | **S2** |
 | IMP-02 | A running service can be unlocked and locked through IPC ([08 §7](08-ops.md)) | `unlock` proves the passphrase in a short-lived process; `lock` exits **1** with a pending-IPC message | **S3** |
 | IMP-03 | Automatic unlock uses DPAPI/keyring when opted in ([15 §6.3](15-production-setup.md)) | `vault.auto_unlock` is parsed, but `serve` refuses with `CONFIG_INVALID` | **S2/S3** |
-| IMP-04 | Schema, Alembic migrations, seeded document types, constraints, triggers, and indexes ([04](04-data-model.md)) | Nothing exists | **S1** |
+| IMP-04 | Schema, Alembic migrations, seeded document types, constraints, triggers, and indexes ([04](04-data-model.md)) | All 24 tables and the seed catalogue exist, with revision `c02412ca4b8b` and 33 integration tests against PostgreSQL 18 | **Closed 2026-10-28 (S1)** |
 | IMP-05 | Encrypted `DVD1` dumps, `LATEST`, backup, restore, and pre-migration dumps ([03 §9](03-vault-format.md), [08 §3–4](08-ops.md)) | No dump format implementation and no commands | **S2** |
 | IMP-06 | Database credential stored in DPAPI or the OS keyring, never in TOML ([02 §6.3](02-architecture.md)) | No credential storage | **S2** |
 | IMP-07 | `doctor` checks the live database and its version ([08 §1](08-ops.md)) | Reports **FAIL** unconditionally with the DSN, so the command exits **1** until S2 | **S2** |
@@ -257,7 +288,7 @@ one.
 Slices are ordered so that each one can be tested before the next depends on it. A slice is done
 when its tests pass, the contracts still hold, and this page is updated.
 
-### S1 — Database foundation
+### S1 — Database foundation — **done 2026-10-28**
 
 **Build:** SQLAlchemy 2.0 models for every table in [04](04-data-model.md), Alembic configuration
 and the first migration, documented enums and constraints, partial indexes, updated-at and
@@ -267,6 +298,11 @@ temporary database on the throwaway cluster.
 
 **Exit criteria:** migration upgrades an empty database and downgrades cleanly; constraints reject
 bad rows; the seed is idempotent; integration tests run against real PostgreSQL, never SQLite.
+
+**Delivered:** 24 models under `app/db/models/`; revision `c02412ca4b8b` with triggers D-1–D-16 and
+an explicit enum teardown on downgrade; `app/db/seed.py` with 8 categories and 73 types; 33
+integration tests; `alembic check` clean. Contract documents updated for `print = 32`, `gender`
+values, `settings.value`, `row_version`, D-4/D-6/D-10, and the version immutability list.
 
 ### S2 — Provisioning, credentials, and dumps
 
@@ -347,3 +383,4 @@ If the product owner answers differently, the answer changes S5 and S6, not the 
 | Date | Change |
 |---|---|
 | 2026-10-28 | First implementation status page. Vault slice, 67 unit tests, lint and type gates recorded. `blobs.py` moved to `vault/` to match `02` §8. Configuration key names in `08` corrected to the nested form. |
+| 2026-10-28 | S1: database foundation. 24 models, Alembic revision `c02412ca4b8b`, triggers D-1–D-16, seed catalogue (8 categories, 73 types), 33 integration tests; 100 tests total. `04` synced for `print = 32`, `gender`, `settings.value`, `row_version`, D-4/D-6/D-10/D-16, and version immutability. `08` no longer claims the seed is a migration. `14` records the integration command and `DOCVAULT_TEST_PG_DSN`. |

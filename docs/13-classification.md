@@ -106,9 +106,13 @@ Personal identification. Almost always personal data under the DPDP Act.
 | `photograph` | Photograph | sensitive | no |
 | `signature_specimen` | Signature specimen | restricted | no |
 | `address_proof` | Address proof | sensitive | no |
+| `pan_card_front` | PAN card (front) | sensitive | no |
+| `pan_card_back` | PAN card (back) | sensitive | no |
+| `aadhaar_front` | Aadhaar (front) | sensitive | no |
+| `aadhaar_back` | Aadhaar (back) | sensitive | no |
 
-`aadhaar` and `pan_card` also exist as `*_front` and `*_back` types in the seed set, with the
-`side` hint set. They are ordinary types and ordinary documents (`10` ADR-037).
+The four `*_front` / `*_back` types carry the `side` hint. They are ordinary types and ordinary
+documents (`10` ADR-037); the hint only sorts a pre-filled print queue.
 
 ### 4.2 Property and assets — `property`
 

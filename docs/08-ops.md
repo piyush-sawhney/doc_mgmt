@@ -128,21 +128,24 @@ swept at start-up.
 
 ### 2.3 The seeded document-type catalogue
 
-`docvault init` inserts the eight categories and roughly seventy types described in `13` §4, with
+`docvault init` inserts the eight categories and the types described in `13` §4, with
 `is_system = true`. Without them the first upload has nothing to choose from, so this is part of
 installation, not an optional extra.
 
 | Property | Value |
 |---|---|
-| Categories | 8: identity, property, legal, corporate, financial, employment, insurance, other |
-| Types | About 70, each with a code, a name, a default sensitivity, and an expiry requirement |
+| Categories | 8: identity, property, legal, corporate, finance, employment, insurance, other |
+| Types | 73, each with a code, a name, a default sensitivity, and an expiry requirement |
 | Size | A few hundred rows at most, negligible next to the schema |
 | Re-running | `docvault migrate` inserts anything missing and changes nothing that exists |
 | Deleting | Seeded rows cannot be deleted; they can be renamed (`13` §9) |
 
-Because the seed is applied by a migration, an upgrade that adds a type does not require the
-operator to remember anything. A rename by an admin survives migrations, because the seed matches
-on `code`, not on the display name.
+The catalogue is **not** seeded by a migration. Names are encrypted with `meta_key`, and a
+migration cannot hold the vault key. The seed therefore runs as an application step after the
+vault is unlocked, and `docvault migrate` runs it again after applying migrations. It is
+idempotent and matches on `code`, so an upgrade that adds a type needs no operator action, and a
+rename by an admin survives. An existing code that has moved to a different place in the tree is
+refused with `SEED_CONFLICT` rather than silently overwritten.
 
 ## 3. Backups
 

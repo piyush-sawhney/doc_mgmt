@@ -344,7 +344,7 @@ flowchart LR
 | An endpoint or payload | Update `07`, and keep `v1` backward compatible |
 | A permission rule | Update `06`, and add a row to its test matrix |
 | A print layout rule | Update `12`, and add a golden-file case |
-| A classification default | Update `13` and the seed migration; never rewrite existing documents |
+| A classification default | Update `13` and the seed catalogue; never rewrite existing documents |
 
 Migrations are append-only. Once a migration is merged, a new migration fixes it; editing the old
 one makes two developers' databases disagree and breaks every restored dump.
@@ -355,9 +355,10 @@ one makes two developers' databases disagree and breaks every restored dump.
 |---|---|
 | `ruff check backend` | Style and obvious bugs |
 | `ruff format --check backend` | Formatting is stable |
-| `mypy backend/app` | Types line up at the module boundaries |
-| `pytest backend/tests/unit -q` | Crypto vectors, permission matrix, grid maths |
-| `pytest backend/tests/integration -q` | Real PostgreSQL, real vault, migrations, dump/restore |
+| `cd backend && ../.venv/bin/mypy app` | Types line up at the module boundaries (the config lives in `backend/pyproject.toml`) |
+| `cd backend && ../.venv/bin/pytest tests/unit -q` | Crypto vectors, permission matrix, grid maths |
+| `cd backend && ../.venv/bin/pytest tests/integration -q` | Real PostgreSQL, real vault, migrations, dump/restore |
+| `cd backend && ../.venv/bin/pytest -q -m "not integration"` | Everything that runs without a database |
 | `pytest backend/tests/render -q` | Golden pages and the hostile-input corpus |
 | `pytest backend/tests/e2e -q` | Every route as an unauthorised user, plus the happy paths |
 | `npm --prefix frontend run typecheck` | TypeScript |
@@ -369,8 +370,11 @@ one makes two developers' databases disagree and breaks every restored dump.
 Target: the full suite finishes in under ten minutes on a laptop. A test that needs a specific
 timezone, locale, or network must be fixed, not skipped.
 
-Integration tests create their own database on the same 5433 cluster and drop it afterwards. If
-you see `PG_VERSION_UNSUPPORTED`, you pointed them at the wrong cluster.
+Integration tests create their own database on the same 5433 cluster and drop it afterwards. The
+default admin DSN is `postgresql+psycopg://postgres@127.0.0.1:5433/postgres`; override it with
+`DOCVAULT_TEST_PG_DSN`. Each test database is migrated from scratch with Alembic, so a migration
+bug fails the suite rather than a manual check. If you see `PG_VERSION_UNSUPPORTED`, you pointed
+them at the wrong cluster; if they are skipped, the throwaway cluster is not running.
 
 ## 9. Adding AI coding skills and tools
 

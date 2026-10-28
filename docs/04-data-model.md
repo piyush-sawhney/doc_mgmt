@@ -117,6 +117,7 @@ readable name.
 | `name` | `citext` UK | For example `Finance` or `Partners` |
 | `description_enc` | `bytea` NULL | |
 | `is_system` | `boolean` | Reserved groups cannot be deleted |
+| `row_version` | `bigint` | Optimistic locking. **D-10** |
 
 `group_members(user_id, group_id, added_at)` has primary key `(user_id, group_id)`.
 
@@ -173,8 +174,9 @@ Constraints: an `individual` must have exactly one `entity_person` row with `rol
 | `full_name_enc` | `bytea` | |
 | `name_blind` | `bytea(33)` | Duplicate hints |
 | `date_of_birth` | `date` NULL | |
-| `gender` | `gender` NULL | Optional |
+| `gender` | `gender` NULL | Optional: `female`, `male`, `other`, or `undisclosed` |
 | `notes_enc` | `bytea` NULL | |
+| `row_version` | `bigint` | Optimistic locking. **D-10** |
 | `created_at` / `created_by` | | |
 | `deleted_at` | `timestamptz` NULL | |
 
@@ -204,6 +206,7 @@ per individual.
 | `verified_at` / `verified_by` | | |
 | `duplicate_ack_of` | `uuid` NULL FK → identifiers | Set when an operator accepts a known duplicate |
 | `notes_enc` | `bytea` NULL | |
+| `row_version` | `bigint` | Optimistic locking. **D-10** |
 | `created_at` / `created_by` | | |
 | `deleted_at` | `timestamptz` NULL | |
 
@@ -230,6 +233,7 @@ Two levels only. `parent_id = NULL` means the row is a **category**; a row with 
 | `purpose_enc` | `bytea` NULL | DPDP purpose note |
 | `is_system` | `boolean` | Seeded types cannot be deleted |
 | `sort_order` | `integer` | |
+| `row_version` | `bigint` | Optimistic locking. **D-10** |
 
 The category of a document is **derived** from its type, never stored a second time. That makes it
 impossible for the two to disagree.
@@ -283,9 +287,10 @@ Partial indexes: `(doc_type_id) WHERE deleted_at IS NULL`,
 | `uploaded_at` / `uploaded_by` | | |
 | `purged_at` | `timestamptz` NULL | |
 
-**Immutability trigger:** any `UPDATE` that touches `blob_addr`, `blob_salt`, `plaintext_size`,
-`mime`, `original_filename_enc`, `derived_pdf_addr`, `derived_pdf_salt`, `version_no`, or
-`uploaded_*` raises an exception. Only `note_enc` and `purged_at` may change.
+**Immutability trigger:** any `UPDATE` that touches `document_id`, `version_no`, `blob_addr`,
+`blob_salt`, `plaintext_size`, `stored_size`, `mime`, `original_filename_enc`,
+`derived_pdf_addr`, `derived_pdf_salt`, or `uploaded_*` raises an exception. Only `note_enc` and
+`purged_at` may change.
 
 A DOCX version therefore owns two blobs: the original bytes and the PDF rendition made once at
 upload. Both are immutable, both are purged together, and the PDF is a **stored artifact, not a
@@ -299,7 +304,7 @@ entity may have many documents.
 
 ### Tags
 
-`tags(id, name_enc, name_blind UK, color, is_system)`.
+`tags(id, name_enc, name_blind UK, color, is_system, row_version)`.
 `document_tags(document_id, tag_id)` has primary key `(document_id, tag_id)`.
 
 ### `version_render_settings` — the edit recipe
@@ -312,6 +317,7 @@ row means "render as stored", which is the overwhelmingly common case.
 | `version_id` | `uuid` PK FK → document_versions | `ON DELETE CASCADE` |
 | `recipe_enc` | `bytea` | Encrypted canonical JSON. See `05` §5.2. |
 | `recipe_hash` | `char(64)` | SHA-256 of the plaintext canonical JSON, for print-job provenance |
+| `row_version` | `bigint` | Optimistic locking. **D-10** |
 | `updated_at` / `updated_by` | | |
 
 The recipe is a rendering choice, not a document. It is **not** versioned, and changing it does
@@ -338,13 +344,15 @@ cannot be rebuilt byte for byte.
 | `object_id` | `uuid` | Polymorphic, validated by a trigger |
 | `subject_type` | `acl_subject` | `user` or `group` |
 | `subject_id` | `uuid` | |
-| `capabilities` | `smallint` | Bitmask: `1` = view, `2` = read, `4` = write, `8` = delete, `16` = manage permissions |
+| `capabilities` | `smallint` | Bitmask: `1` = view, `2` = read, `4` = write, `8` = delete, `16` = manage permissions, `32` = print. Range `1–63`. |
 | `effect` | `acl_effect` | `allow` or `deny` |
+| `row_version` | `bigint` | Optimistic locking. **D-10** |
 | `created_at` / `created_by` | | |
 | `updated_at` / `updated_by` | | |
 
 Unique on `(object_type, object_id, subject_type, subject_id)`. Indexes on
-`(subject_type, subject_id)` and `(object_type, object_id)`.
+`(subject_type, subject_id)` and `(object_type, object_id)`. Two `CHECK` constraints keep the
+mask coherent: `read` implies `view`, and `print` implies `read`.
 
 **Purge is not a grantable capability.** It is an admin-only role check (`06` §4).
 
@@ -368,7 +376,8 @@ How the bits combine, and why deny wins, is explained in `06-rbac-acl.md` §5.
 | `prev_hash` / `hash` | `bytea(32)` | Chain |
 | `file_month` | `text` | `YYYY-MM` of the audit file holding this entry |
 
-`REVOKE UPDATE, DELETE` from the application role, and a trigger rejects both unconditionally.
+`REVOKE UPDATE, DELETE` from the application role once it is provisioned ([08 §2.2](08-ops.md));
+a trigger rejects `UPDATE`, `DELETE`, and `TRUNCATE` unconditionally, including for the owner.
 
 ### `download_tickets`
 
@@ -451,10 +460,15 @@ upload safe.
 | Column | Type | Notes |
 |---|---|---|
 | `key` | `text` PK | |
-| `value_enc` | `bytea` | Encrypted, except `vault_root` |
+| `value` | `text` NULL | Plaintext. Used **only** for `vault_root` |
+| `value_enc` | `bytea` NULL | Encrypted. Used for every other setting |
+| `row_version` | `bigint` | Optimistic locking. **D-10** |
 | `updated_at` | `timestamptz` | |
 
-Only `vault_root` is stored as plaintext. It is the single absolute path in the system.
+Exactly one of `value` and `value_enc` is non-null, enforced by a `CHECK`. `vault_root` is the
+only plaintext setting; it is the single absolute path in the system. The database identity keys
+— `vault_id` and `schema_version` — live here as encrypted values, which is what lets
+`doctor` refuse a database that belongs to another vault ([08 §2.2](08-ops.md)).
 
 ## 8. Document lifecycle
 
@@ -537,18 +551,19 @@ passphrase at all.
 | D-1 | Immutable version fields cannot be updated | `BEFORE UPDATE` trigger |
 | D-2 | `documents.current_version_id` belongs to the same document | Trigger |
 | D-3 | `version_count` matches reality | Trigger on insert and delete |
-| D-4 | An individual has exactly one `self` person link | Partial unique index plus trigger |
+| D-4 | An individual has exactly one `self` person link | Partial unique index plus **deferred** constraint triggers on both tables, so the entity and person can be created in one transaction |
 | D-5 | `acl_entries.object_id` points at a live row of the right type | Trigger |
-| D-6 | `audit_events` cannot be updated or deleted | `REVOKE` plus trigger |
+| D-6 | `audit_events` cannot be updated, deleted, or truncated | Trigger (and `REVOKE` once the application role exists, [08 §2.2](08-ops.md)) |
 | D-7 | A purged document has no live blobs | Service check plus `verify` reconciliation |
 | D-8 | `purged_at` implies `deleted_at` | `CHECK` |
 | D-9 | `legal_hold` blocks purge | Service check plus trigger guard |
-| D-10 | Every mutable table has `row_version` | `CHECK (row_version > 0)` |
+| D-10 | Every user-editable table has `row_version` | `CHECK (row_version > 0)`. Join, append-only, cache, and internal tables (`user_roles`, `group_members`, `entity_person`, `document_entity_links`, `document_tags`, `document_versions`, `audit_events`, `download_tickets`, `renditions`, `print_jobs`, `print_items`, `idempotency_keys`, `sessions`) deliberately have none |
 | D-11 | A rendition cannot outlive its version | `ON DELETE CASCADE` on `renditions.version_id` |
 | D-12 | `print_items` never blocks a purge | No foreign keys to `documents` or `document_versions` |
 | D-13 | One recipe per version | `version_render_settings.version_id` is the primary key |
 | D-14 | `doc_types` never goes deeper than two levels | Trigger on `parent_id` |
 | D-15 | A type cannot be its own parent, or a child of a type | `CHECK` plus trigger |
+| D-16 | `updated_at` is authoritative | `BEFORE UPDATE` trigger on `entities`, `documents`, `acl_entries`, `settings`, and `version_render_settings` |
 
 ## 11. Expected volumes
 
