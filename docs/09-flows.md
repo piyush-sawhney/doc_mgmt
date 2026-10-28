@@ -62,6 +62,10 @@ upgraded by the app; it is only used. TLS material is written outside the vault 
 (`08` §2). If the vault already exists and only the credential needs re-creating, `init
 --reuse-vault` does that without touching `manifest.json` or `kek.wrapped`.
 
+The client-tool version check and the initial dump are part of the same flow but not of the same
+slice: `doctor` owns the `pg_dump` check, and the first `DVD1` dump arrives with S2b
+([17 §7](17-implementation.md)).
+
 ## 2. Logging in, with TOTP
 
 ```mermaid

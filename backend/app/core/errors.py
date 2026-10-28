@@ -94,6 +94,12 @@ ERROR_SPECS: dict[str, ErrorSpec] = {
         "The database has been migrated by a newer application version.",
         "Install the matching application version or restore its dump.",
     ),
+    "MIGRATION_FAILED": ErrorSpec(
+        "Database migration failed",
+        500,
+        "The schema could not be migrated.",
+        "Read the reported cause, fix it, and run docvault migrate again.",
+    ),
     # Filesystem
     "FS_NETWORK_PATH": ErrorSpec(
         "Vault is on a network filesystem",

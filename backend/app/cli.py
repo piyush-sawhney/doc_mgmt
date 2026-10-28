@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import secrets
 import shutil
 import subprocess
 import sys
@@ -16,19 +17,29 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import uvicorn
+from sqlalchemy.engine import Engine, make_url
 
 from app.core.config import LoadedSettings, load_settings, write_vault_root
 from app.core.errors import DocVaultError
 from app.core.logging import configure_logging
 from app.core.tls import TlsMaterial, generate_tls, public_fingerprint, tls_directory
+from app.crypto.keys import VaultKeys, derive_keys, unwrap_vmk
 from app.crypto.passphrase import validate_passphrase
+from app.db import bootstrap, connect
+from app.db.credentials import (
+    Credential,
+    credential_path,
+    load_credential,
+    save_credential,
+)
+from app.db.provision import DEFAULT_DATABASE, DEFAULT_ROLE, provision
 from app.main import create_app
 from app.vault import audit
 from app.vault.init import create_vault
 from app.vault.inspect import inspect
 from app.vault.layout import probe_root, vault_paths
 from app.vault.manifest import load as load_manifest
-from app.vault.manifest import validate_structure
+from app.vault.manifest import load_and_verify, validate_structure
 from app.vault.session import VaultManager
 from app.version import __version__
 
@@ -67,12 +78,125 @@ def _load_extra() -> object:
     return object()
 
 
+def _admin_dsn(loaded: LoadedSettings, override: str | None) -> str:
+    """Return a DSN for the PostgreSQL admin, prompting for a password if needed."""
+    if override:
+        return override
+    url = make_url(loaded.settings.database.dsn)
+    if url.password is not None:
+        raise DocVaultError(
+            "CONFIG_INVALID",
+            detail="database.dsn must not carry a password.",
+            remediation="Leave the password out of docvault.toml; the app stores it.",
+        )
+    host = url.host or "local socket"
+    password = getpass.getpass(f"PostgreSQL admin password for postgres@{host} (blank for trust): ")
+    admin = url.set(
+        username="postgres",
+        password=password or None,
+        database="postgres",
+    )
+    return admin.render_as_string(hide_password=False)
+
+
+def _provision_database(loaded: LoadedSettings, args: argparse.Namespace) -> Credential:
+    """Create the role and database, then store the generated credential."""
+    if loaded.path is None:  # pragma: no cover - load_settings always sets it
+        raise DocVaultError("CONFIG_INVALID", detail="init needs a configuration file.")
+    url = make_url(loaded.settings.database.dsn)
+    if url.password is not None:
+        raise DocVaultError(
+            "CONFIG_INVALID",
+            detail="database.dsn must not carry a password.",
+            remediation="Leave the password out of docvault.toml; the app stores it.",
+        )
+    role = url.username or DEFAULT_ROLE
+    database = url.database or DEFAULT_DATABASE
+    password = secrets.token_urlsafe(32)
+    result = provision(
+        _admin_dsn(loaded, args.admin_dsn),
+        database=database,
+        role=role,
+        password=password,
+    )
+    credential = Credential(role=role, password=password)
+    save_credential(
+        credential_path(loaded.path),
+        credential,
+        environment=loaded.settings.environment,
+    )
+    action = "created" if result.role_created or result.database_created else "adopted"
+    print(f"database: {result.database} ({action}), role {result.role}")
+    return credential
+
+
+def _unlock(manager: VaultManager) -> None:
+    """Unlock with a passphrase from the terminal, with no confirmation prompt."""
+    manager.unlock(_prompt_passphrase(confirm=False))
+
+
+def _keys_without_lock(root: Path, passphrase: str) -> VaultKeys:
+    """Derive keys read-only, for `doctor`, which must not take the writer lock."""
+    wrapped = vault_paths(root).kek.read_bytes()
+    vmk = unwrap_vmk(wrapped, passphrase)
+    keys = derive_keys(vmk)
+    load_and_verify(vault_paths(root).manifest, keys)
+    return keys
+
+
+def _migrate_and_seed(
+    loaded: LoadedSettings, manager: VaultManager, credential: Credential
+) -> None:
+    """Apply migrations, then seed and stamp the identity. Caller owns the lock."""
+    bootstrap.migrate_database(loaded, credential)
+    engine = bootstrap.engine_for(loaded, credential)
+    try:
+        with engine.connect() as connection:
+            result = bootstrap.bootstrap_database(
+                connection,
+                meta_key=manager.keys.meta_key,
+                vault_id=manager.manifest.vault_id,
+            )
+    finally:
+        engine.dispose()
+    manager.record_event(
+        "database.migrate",
+        object_type="database",
+        object_id=manager.manifest.vault_id,
+        detail={
+            "schema_version": result.schema_version,
+            "categories_inserted": result.seed.categories_inserted,
+            "types_inserted": result.seed.types_inserted,
+        },
+    )
+    print(
+        f"database: schema {result.schema_version}, "
+        f"{result.seed.categories_total} categories, {result.seed.types_total} types "
+        f"({result.seed.inserted} inserted)"
+    )
+
+
 def _cmd_init(args: argparse.Namespace) -> int:
     loaded = _load(args)
     settings = loaded.settings
     root = args.vault.expanduser().resolve()
     if loaded.path is None:  # pragma: no cover - load_settings always sets it
         raise DocVaultError("CONFIG_INVALID", detail="init needs a configuration file.")
+
+    credential: Credential | None = None
+    if args.reuse_vault:
+        if not (root / "manifest.json").is_file():
+            raise DocVaultError(
+                "VAULT_NOT_FOUND",
+                detail=f"No vault at {root}; run init without --reuse-vault first.",
+            )
+        credential = _provision_database(loaded, args)
+        print("vault: reused; manifest and key file were not touched")
+        return EXIT_OK
+
+    if not args.no_database:
+        credential = _provision_database(loaded, args)
+
     passphrase = _prompt_passphrase(confirm=True)
     validate_passphrase(passphrase)
     max_file_bytes = (
@@ -98,6 +222,15 @@ def _cmd_init(args: argparse.Namespace) -> int:
         material = generate_tls(directory, bind=settings.server.bind, force=args.force_tls)
     write_vault_root(loaded.path, root)
 
+    if credential is not None:
+        manager = VaultManager(root, app_version=__version__)
+        try:
+            manager.open()
+            manager.unlock(passphrase)
+            _migrate_and_seed(loaded, manager, credential)
+        finally:
+            manager.close()
+
     print(f"vault_root: {result.root}")
     print(f"vault_id: {result.vault_id}")
     print(f"display_name: {result.display_name}")
@@ -106,7 +239,8 @@ def _cmd_init(args: argparse.Namespace) -> int:
         print(f"tls_directory: {material.directory}")
         print(f"ca_fingerprint: {material.ca_fingerprint}")
         print(f"server_fingerprint: {material.server_fingerprint}")
-    print("database: not provisioned by this build (see docs/17-implementation.md)")
+    if credential is None:
+        print("database: not provisioned (init --no-database)")
     print("next: seal the passphrase in two envelopes before uploading a document")
     return EXIT_OK
 
@@ -127,6 +261,11 @@ def _cmd_status(args: argparse.Namespace) -> int:
     print(f"format_version: {info.manifest.format_version}")
     print(f"schema_version: {info.manifest.schema_version}")
     print(f"key_fingerprint: {info.manifest.key_fingerprint}")
+    url = make_url(settings.database.dsn)
+    if loaded.path is not None and credential_path(loaded.path).is_file():
+        print(f"database: {url.database or DEFAULT_DATABASE} (credential present)")
+    else:
+        print(f"database: {url.database or DEFAULT_DATABASE} (credential missing)")
     lock = info.lock.record
     if lock is None:
         print("lock: free")
@@ -172,6 +311,80 @@ def _pg_version(executable: Path) -> str | None:
     return result.stdout.strip() or result.stderr.strip()
 
 
+def _doctor_vault_key(checks: list[tuple[str, bool, str]], root: Path) -> bytes | None:
+    if not sys.stdin.isatty():
+        checks.append(
+            _check("vault key", False, "a terminal is needed to verify the database identity")
+        )
+        return None
+    try:
+        passphrase = _prompt_passphrase(confirm=False)
+        meta_key = _keys_without_lock(root, passphrase).meta_key
+    except DocVaultError as exc:
+        checks.append(_check("vault key", False, f"{exc.code}: {exc.detail}"))
+        return None
+    checks.append(_check("vault key", True, "manifest signature verified"))
+    return meta_key
+
+
+def _doctor_identity(
+    checks: list[tuple[str, bool, str]],
+    engine: Engine,
+    *,
+    meta_key: bytes | None,
+    vault_id: str | None,
+) -> None:
+    if meta_key is None or vault_id is None:
+        return
+    try:
+        with engine.connect() as connection:
+            identity = bootstrap.check_bootstrap(
+                connection,
+                meta_key=meta_key,
+                vault_id=vault_id,
+            )
+    except DocVaultError as exc:
+        checks.append(_check("database identity", False, f"{exc.code}: {exc.detail}"))
+        return
+    checks.append(
+        _check(
+            "database identity",
+            True,
+            f"{identity.vault_id} (schema {identity.schema_version})",
+        )
+    )
+
+
+def _doctor_database(
+    checks: list[tuple[str, bool, str]],
+    loaded: LoadedSettings,
+    *,
+    meta_key: bytes | None,
+    vault_id: str | None,
+) -> None:
+    if loaded.path is None:  # pragma: no cover - load_settings always sets it
+        checks.append(_check("database credential", False, "no configuration file"))
+        return
+    try:
+        credential = load_credential(credential_path(loaded.path))
+    except DocVaultError as exc:
+        checks.append(_check("database credential", False, f"{exc.code}: {exc.detail}"))
+        return
+    checks.append(_check("database credential", True, str(credential_path(loaded.path))))
+
+    engine = bootstrap.engine_for(loaded, credential)
+    try:
+        try:
+            info = connect.require_supported_server(engine)
+        except DocVaultError as exc:
+            checks.append(_check("database server", False, f"{exc.code}: {exc.detail}"))
+            return
+        checks.append(_check("database server", True, f"PostgreSQL {info.version}"))
+        _doctor_identity(checks, engine, meta_key=meta_key, vault_id=vault_id)
+    finally:
+        engine.dispose()
+
+
 def _cmd_doctor(args: argparse.Namespace) -> int:
     loaded = _load(args)
     settings = loaded.settings
@@ -180,9 +393,11 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     checks.append(_check("configuration", True, str(loaded.path)))
     checks.append(_check("vault root", root.is_dir(), str(root)))
 
+    vault_id: str | None = None
     if (root / "manifest.json").is_file():
         try:
             identity = validate_structure(load_manifest(root / "manifest.json"))
+            vault_id = identity.vault_id
             checks.append(
                 _check("manifest", True, f"{identity.vault_id} (format {identity.format_version})")
             )
@@ -239,13 +454,9 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
             str(tls_dir),
         )
     )
-    checks.append(
-        _check(
-            "database connection",
-            False,
-            f"not checked by this build; DSN {settings.database.dsn}",
-        )
-    )
+
+    meta_key = _doctor_vault_key(checks, root)
+    _doctor_database(checks, loaded, meta_key=meta_key, vault_id=vault_id)
 
     width = max(len(name) for name, _, _ in checks)
     failures = 0
@@ -271,6 +482,21 @@ def _cmd_unlock(args: argparse.Namespace) -> int:
         print(f"unlocked: {identity.vault_id}")
         print(f"key_fingerprint: {identity.key_fingerprint}")
         print("note: this build verifies the passphrase locally; live unlock IPC is pending")
+        return EXIT_OK
+    finally:
+        manager.close()
+
+
+def _cmd_migrate(args: argparse.Namespace) -> int:
+    loaded = _load(args)
+    settings = loaded.settings
+    root = settings.require_vault_root()
+    manager = VaultManager(root, app_version=__version__, force_lock=args.force_lock)
+    try:
+        manager.open()
+        _unlock(manager)
+        credential = bootstrap.credential_for(loaded)
+        _migrate_and_seed(loaded, manager, credential)
         return EXIT_OK
     finally:
         manager.close()
@@ -319,8 +545,20 @@ def _cmd_serve(args: argparse.Namespace) -> int:
             remediation="Run docvault init to generate the CA and server certificate.",
         )
     app = create_app(loaded=loaded, vault=manager, app_version=__version__)
-    print(f"serving on https://{settings.server.bind}:{settings.server.port}")
     try:
+        credential = bootstrap.credential_for(loaded)
+        engine = bootstrap.engine_for(loaded, credential)
+        try:
+            connect.require_supported_server(engine)
+            with engine.connect() as connection:
+                bootstrap.check_bootstrap(
+                    connection,
+                    meta_key=manager.keys.meta_key,
+                    vault_id=manager.manifest.vault_id,
+                )
+        finally:
+            engine.dispose()
+        print(f"serving on https://{settings.server.bind}:{settings.server.port}")
         uvicorn.run(
             app,
             host=settings.server.bind,
@@ -355,6 +593,21 @@ def build_parser() -> argparse.ArgumentParser:
     init.add_argument("--max-file-mb", type=int, default=None, help="Upload limit in MiB")
     init.add_argument("--force-tls", action="store_true", help="Replace existing TLS material")
     init.add_argument("--no-tls", action="store_true", help="Do not generate TLS (tests only)")
+    init.add_argument(
+        "--admin-dsn",
+        default=None,
+        help="PostgreSQL admin DSN; the password is prompted for when omitted",
+    )
+    init.add_argument(
+        "--no-database",
+        action="store_true",
+        help="Create only the vault and TLS; do not provision PostgreSQL",
+    )
+    init.add_argument(
+        "--reuse-vault",
+        action="store_true",
+        help="Re-create the database role and credential for an existing vault",
+    )
     init.set_defaults(func=_cmd_init)
 
     status = subparsers.add_parser("status", help="Show vault identity, lock, and counts")
@@ -368,6 +621,11 @@ def build_parser() -> argparse.ArgumentParser:
     unlock = subparsers.add_parser("unlock", help="Verify the passphrase and unwrap the vault key")
     _add_config_argument(unlock)
     unlock.set_defaults(func=_cmd_unlock)
+
+    migrate = subparsers.add_parser("migrate", help="Apply migrations, then seed the catalogue")
+    _add_config_argument(migrate)
+    migrate.add_argument("--force-lock", action="store_true", help="Take over a stale vault lock")
+    migrate.set_defaults(func=_cmd_migrate)
 
     lock = subparsers.add_parser("lock", help="Drop the vault key from a running service")
     _add_config_argument(lock)

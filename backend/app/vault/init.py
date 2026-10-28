@@ -16,10 +16,11 @@ from app.core.errors import DocVaultError
 from app.core.time import format_seconds, now_utc
 from app.crypto.keys import derive_keys, new_vmk, wrap_vmk
 from app.crypto.passphrase import validate_passphrase
+from app.db.schema import SCHEMA_VERSION
 from app.vault import audit, manifest
 from app.vault.layout import atomic_write, probe_root, vault_paths
 
-INITIAL_SCHEMA_VERSION = 1
+INITIAL_SCHEMA_VERSION = SCHEMA_VERSION
 
 
 @dataclass(frozen=True, slots=True)

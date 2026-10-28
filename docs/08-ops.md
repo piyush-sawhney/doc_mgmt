@@ -36,6 +36,11 @@ Everything an operator needs is one program.
 The first installation is a separate, ordered walkthrough in `15`. This page is the reference you
 keep afterwards.
 
+The current build implements `init` (with `--admin-dsn`, `--no-database`, and `--reuse-vault`),
+`serve`, `unlock`, `lock`, `status`, `doctor`, and `migrate [--force-lock]`. The remaining
+commands are specified here and tracked in [17 §6](17-implementation.md); `migrate` does not write
+a pre-migration dump yet.
+
 ## 2. Installing
 
 PostgreSQL is a **prerequisite**, not something the installer provides. Install it first, or the
@@ -69,7 +74,7 @@ Fixed defaults:
 | HTTPS port | `8443` |
 | PostgreSQL connection | Loopback only. A local socket on Linux, `localhost:5432` on Windows. Not configurable to a remote host without an explicit opt-out. |
 | `pg_bin_dir` | Auto-detected; on Windows typically `C:\Program Files\PostgreSQL\18\bin`. Holds `pg_dump.exe` and `pg_restore.exe`. |
-| Database credential | DPAPI machine-scope (Windows) or OS keyring (Linux), ACL'd to the service account |
+| Database credential | DPAPI machine-scope (Windows) or a `0600` file beside the config (Linux development), ACL'd to the service account |
 | Configuration | `docvault.toml` in the OS config folder |
 | Logs | `.../docvault/logs` in the OS log folder |
 | TLS material | `.../docvault/tls` in the OS config folder, **outside the vault** |
@@ -103,7 +108,7 @@ fix.
 | Client tools present | `pg_dump` and `pg_restore` resolve from `pg_bin_dir` | `PG_CLIENT_MISSING` |
 | Client version | `pg_dump --version` ≥ `server_version` | `PG_CLIENT_TOO_OLD` |
 | Server address | The resolved address is loopback | `DB_NOT_LOOPBACK` |
-| Credential decrypts | DPAPI unwrap (Windows) or keyring read (Linux) succeeds | `DB_CREDENTIAL_UNREADABLE` |
+| Credential decrypts | DPAPI unwrap (Windows) or `0600` file read (Linux development) succeeds | `DB_CREDENTIAL_UNREADABLE` |
 | Database identity | `vault_id` in the database matches the manifest | `VAULT_DB_MISMATCH` |
 | Schema | `schema_version` matches or is older than the app | `SCHEMA_TOO_NEW` |
 
@@ -112,14 +117,20 @@ role with no superuser and no `CREATEDB`, generates a random password for it, an
 encrypted with DPAPI in machine scope. Only the service account can decrypt it. It is never
 written to `docvault.toml`, the vault, an environment variable, or a log line.
 
+The credential is stored in `docvault-db.cred` beside the configuration file, never inside the
+vault. If the credential alone must be re-created — a re-imaged machine, a changed DSN — run
+`docvault init --reuse-vault`. It re-provisions the role and rewrites the credential without
+touching `manifest.json` or `keys/kek.wrapped`, so the vault key and its documents stay valid.
+
 **Why DPAPI and not the Windows Credential Manager:** Credential Manager entries are per-user,
 and an administrator running `docvault doctor` from their own session is not the service
 account. Machine-scope DPAPI avoids that support call.
 
-**On Linux (development).** There is no DPAPI. The credential goes in the user's keyring through
-the Secret Service API, or — if no keyring is available in a headless dev container — in a
-`0600` file next to the config, and `doctor` prints a warning saying so. That fallback is for
-development only and is refused when the app detects a production install.
+**On Linux (development).** There is no DPAPI, and this build does not use the keyring yet. The
+credential goes in `docvault-db.cred` with mode `0600`, beside the configuration. It is refused
+when `environment = "production"` on a non-Windows host, because a file next to the config has no
+service-account boundary. Secret Service keyring support arrives with the production slice
+([17 §7 S8](17-implementation.md)); until then Linux is a development-only target.
 
 **The `pg_dump` password.** `pg_dump` is a separate executable and cannot read DPAPI. The app
 writes a transient `PGPASSFILE` into `vault/tmp/`, restricted to the service account, passes its
@@ -433,6 +444,7 @@ because a version that cannot be previewed or printed is a trap.
 | `DB_NOT_LOOPBACK` | The DSN points at another machine | Fix the DSN. This system expects one host. |
 | `DB_CREDENTIAL_UNREADABLE` | The service runs as a different account, or the machine was re-imaged | Re-run `docvault init --reuse-vault` to re-create the credential under the service account |
 | `VAULT_DB_MISMATCH` | Connected to the wrong database, or an empty new cluster after an OS major upgrade | Check `vault_id`. The OS upgrade may have created a new cluster; restore into the old one or re-point the DSN. |
+| `MIGRATION_FAILED` at `init` or `migrate` | Alembic could not reach the database, a revision is missing, or the schema is partly applied | Read the reported cause. Fix the connection or the migrations directory (`DOCVAULT_MIGRATIONS`), then run `docvault migrate` again. Every step is idempotent, so a retry is safe. |
 | `VAULT_LOCKED` | `.lock` held by another process | Find the process. If the lock is older than 30 seconds, use `--force` with confirmation. |
 | `VAULT_KEY_MISMATCH` | Correct passphrase, wrong vault folder | Check `vault_id` in `manifest.json` |
 | `AUDIT_CHAIN_BROKEN` | The newest audit line is partial or unreadable | Run `docvault verify`. Restore the last good audit folder before appending more events; never edit the chain by hand. |

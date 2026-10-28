@@ -163,7 +163,9 @@ else, and deleting `var/pg` resets it completely.
 ```bash
 mkdir -p var
 initdb -D var/pg -U postgres --auth=trust --encoding=UTF8 --no-locale
-pg_ctl -D var/pg -o "-p 5433 -c listen_addresses=127.0.0.1" -l var/pg.log start
+pg_ctl -D var/pg \
+  -o "-p 5433 -c listen_addresses=127.0.0.1 -c unix_socket_directories=$PWD/var" \
+  -l var/pg.log start
 ```
 
 `--auth=trust` is acceptable **only** because the cluster listens on loopback and holds synthetic
@@ -207,7 +209,36 @@ docvault init --vault "$PWD/var/vault"
 `init` does the same work as in production (`09` §1): it checks the filesystem, creates the
 `docvault_app` role and the database inside the cluster on 5433, asks for the PostgreSQL admin
 password, asks for a vault passphrase twice, writes the wrapped key, generates a development CA
-and certificate, and takes an initial encrypted dump.
+and certificate, applies the migrations, and seeds the document-type catalogue.
+
+The admin password is prompted for, never stored in the TOML file. Press Enter for a `trust`
+cluster like the one in §4.3. To automate the prompt, pass `--admin-dsn` with an admin DSN that
+carries the password. Use `--no-database` to create only the vault and TLS, for example when
+PostgreSQL is not installed yet; `docvault migrate` provisions nothing, it only needs a role and
+database that already exist.
+
+The generated app password is written to `config/docvault-db.cred` with mode `0600`. That file is
+git-ignored and is not part of the vault. If it is lost, run:
+
+```bash
+docvault init --vault "$PWD/var/vault" --reuse-vault
+```
+
+That re-creates the role password and the credential file without touching `manifest.json` or
+`keys/kek.wrapped`. Then, after a migration or a version upgrade:
+
+```bash
+docvault migrate
+```
+
+`migrate` takes the writer lock, unlocks with the passphrase, applies every Alembic revision, and
+runs the idempotent seed. Use `--force-lock` only after checking that no service is running: it
+takes over a lock older than 30 seconds and audits the takeover.
+
+> **Not yet built:** the first encrypted `DVD1` dump at the end of `init`, and the pre-migration
+> dump at the start of `migrate` ([17 §7 S2b](17-implementation.md)). Until then, `index/db/` is
+> empty and `docvault backup` does not exist. Do not treat this vault as recoverable from dump;
+> keep the database itself for development.
 
 It prints four values worth noting:
 

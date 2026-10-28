@@ -70,19 +70,27 @@ disposable; production setup is [15](15-production-setup.md).
   init --vault /absolute/path/to/var/vault --display-name "Development vault"
 ```
 
-The command prompts twice for the passphrase, applies the policy in [05 §8](05-crypto.md),
-creates the folder layout, writes `manifest.json` and `keys/kek.wrapped`, appends
-`vault.created` to the audit log, generates the development CA and server certificate beside the
-vault, and rewrites `[vault].root` in the configuration file.
+The command prints the PostgreSQL admin password prompt first, unless `--admin-dsn` supplies it.
+It creates the `docvault_app` role and `docvault` database, writes `config/docvault-db.cred` with
+mode `0600`, then prompts twice for the passphrase, applies the policy in
+[05 §8](05-crypto.md), creates the folder layout, writes `manifest.json` and `keys/kek.wrapped`,
+appends `vault.created` to the audit log, generates the development CA and server certificate
+beside the vault, rewrites `[vault].root` in the configuration file, and then applies the
+migrations and seeds the catalogue.
 
-It then prints the vault ID, key fingerprint, TLS directory, and certificate fingerprints. It
-also prints:
+It prints the vault ID, key fingerprint, TLS directory, certificate fingerprints, and the schema
+version with the seeded catalogue size.
 
-```text
-database: not provisioned by this build (see docs/17-implementation.md)
+`--no-database` stops after TLS and is for a host with no PostgreSQL. `--reuse-vault` re-creates
+the role password and credential file for an existing vault and touches nothing else:
+
+```bash
+.venv/bin/docvault --config config/dev.toml \
+  init --vault /absolute/path/to/var/vault --reuse-vault
 ```
 
-That line is the honest boundary of this slice. Database provisioning is §7 slice S2.
+`init` does **not** write the first encrypted dump yet. That is the remaining part of slice S2
+([§7 S2b](#s2--provisioning-credentials-and-dumps)); until it lands, `index/db/` stays empty.
 
 ### 3.3 Inspection and unlock
 
@@ -90,18 +98,21 @@ That line is the honest boundary of this slice. Database provisioning is §7 sli
 .venv/bin/docvault --config config/dev.toml status
 .venv/bin/docvault --config config/dev.toml doctor
 .venv/bin/docvault --config config/dev.toml unlock
+.venv/bin/docvault --config config/dev.toml migrate
 .venv/bin/docvault --config config/dev.toml serve
 ```
 
 | Command | Current behaviour |
 |---|---|
-| `status` | Reads the manifest without unlocking, reports lock state, blob and audit counts, TLS fingerprints, and verifies the audit chain |
-| `doctor` | Checks configuration, manifest, filesystem, key file, audit chain, PostgreSQL 18 client tools, and TLS material. The database connection check intentionally reports **FAIL** until S2 |
+| `status` | Reads the manifest without unlocking, reports lock state, blob and audit counts, TLS fingerprints, verifies the audit chain, and reports whether the database credential exists |
+| `doctor` | Checks configuration, manifest, filesystem, key file, audit chain, PostgreSQL 18 client tools, TLS material, the credential file, the live server version, and — when a terminal is available for the passphrase — the database `vault_id` and schema version |
 | `unlock` | Takes the writer lock, unwraps the VMK, verifies the manifest, appends `vault.unlock.allow`, then releases the lock. It proves the passphrase; it cannot unlock a service in another process yet |
+| `migrate` | Takes the writer lock, unlocks, applies Alembic revisions, seeds the catalogue, stamps `vault_id` and `schema_version` into `settings`, and audits `database.migrate`. Safe to re-run; `--force-lock` takes over a stale lock |
 | `lock` | Prints that live unlock/lock IPC is pending and exits **1** |
-| `serve` | Opens the vault, prompts for the passphrase if locked, requires the TLS certificate pair, then runs the HTTPS API |
+| `serve` | Opens the vault, prompts for the passphrase if locked, requires the TLS certificate pair, verifies the database identity, then runs the HTTPS API |
 
 `serve` refuses to start without TLS on purpose. A plaintext listener is never a supported mode.
+It also refuses to start against a database belonging to another vault or a newer schema.
 
 ### 3.4 API
 
@@ -163,7 +174,7 @@ and SQLite is never used ([14 §8](14-development.md)).
 | `app/vault/manifest.py` | [03 §3](03-vault-format.md) | **Partial** | Build, sign, verify, load, schema-version bump, unknown-field preservation. No operator-facing edit command |
 | `app/vault/audit.py` | [03 §10](03-vault-format.md) | **Partial** | Monthly JSONL append and full-chain verification. No anchor file generation and no database mirror |
 | `app/vault/lock.py` | [03 §11](03-vault-format.md) | **Done** | Exclusive create, 5-second heartbeat, 30-second staleness, audited forced takeover |
-| `app/vault/init.py` | [09 §1](09-flows.md) | **Partial** | Vault identity and key wrapping only; TLS is orchestrated by the CLI. Database, schema, seed, and first dump are absent |
+| `app/vault/init.py` | [09 §1](09-flows.md) | **Partial** | Vault identity and key wrapping only; TLS and database bootstrap are orchestrated by the CLI. The first dump is absent |
 | `app/vault/session.py` | [09 §1](09-flows.md), [05 §9](05-crypto.md) | **Partial** | Open, unlock, in-memory lock, close, status, unlock back-off. No automatic unlock, no idle lock, no live IPC |
 | `app/vault/inspect.py` | [08 §1](08-ops.md) | **Done** | Read-only manifest, lock, blob, audit, dump-pointer, and TLS inspection |
 
@@ -173,7 +184,7 @@ and SQLite is never used ([14 §8](14-development.md)).
 |---|---|---|---|
 | `app/api/health.py` | [07 §1](07-api.md) | **Done** | `/healthz` and `/readyz` |
 | `app/main.py` | [02 §8](02-architecture.md) | **Partial** | App factory and lifespan; only the health router is mounted |
-| `app/cli.py` | [08 §1](08-ops.md) | **Partial** | `init`, `status`, `doctor`, `unlock`, `lock`, `serve`. Backup, restore, verify, migrate, rotate, salvage, and user commands are absent |
+| `app/cli.py` | [08 §1](08-ops.md) | **Partial** | `init`, `status`, `doctor`, `unlock`, `lock`, `migrate`, `serve`. Backup, restore, verify, rotate, salvage, and user commands are absent |
 | `app/services/` | [06](06-rbac-acl.md) | **Not started** | The single permission gate does not exist yet |
 | `app/render/`, `app/print/`, `app/jobs/` | [11](11-frontend.md), [12](12-printing.md), [08 §1](08-ops.md) | **Not started** | — |
 | `worker/` | [02 §8](02-architecture.md) | **Not started** | The package name is reserved in `pyproject.toml`; no entry point exists |
@@ -188,12 +199,19 @@ and SQLite is never used ([14 §8](14-development.md)).
 | `app/db/models/` | [04](04-data-model.md) | **Done** | All 24 tables, constraints, partial indexes, deferred FK for `current_version_id` |
 | `migrations/` | [04 §12](04-data-model.md), [14 §7](14-development.md) | **Done** | Alembic scaffold, DSN from `-x dsn=`/`DOCVAULT_DSN`, revision `c02412ca4b8b`, triggers D-1–D-16, clean downgrade |
 | `app/db/seed.py` | [13 §4](13-classification.md) | **Done** | 8 categories, 73 types, encrypted names, `side` hints, idempotent, refuses a reparented code with `SEED_CONFLICT` |
+| `app/db/connect.py` | [08 §2.2](08-ops.md) | **Done** | App engine with the stored password injected at the process boundary, 5-second connect timeout, server-major check |
+| `app/db/provision.py` | [08 §2.2](08-ops.md) | **Done** | Idempotent `docvault_app` role and database creation or adoption over the admin connection; validated identifiers |
+| `app/db/credentials.py` | [08 §2.2](08-ops.md) | **Partial** | Machine-scope DPAPI on Windows (written, unexecuted); `0600` file beside the config on Linux; production refused on non-Windows. Keyring is not wired |
+| `app/db/identity.py` | [05 §9](05-crypto.md), [08 §2.2](08-ops.md) | **Done** | Encrypted `vault_id` and `schema_version` rows, mismatch and newer-schema refusals |
+| `app/db/migrate.py` | [14 §7](14-development.md) | **Done** | Alembic programmatic upgrade, revision probe, `DOCVAULT_MIGRATIONS` override, failures mapped to `MIGRATION_FAILED` |
+| `app/db/bootstrap.py` | [09 §1](09-flows.md) | **Partial** | Migrate, seed, stamp, and identity check wired to `init`, `migrate`, `doctor`, and `serve`. No dump step |
+| `app/db/schema.py` | [04 §12](04-data-model.md) | **Done** | One source for the schema version and the initial revision |
 | Repositories and query layer | [04](04-data-model.md) | **Not started** | The schema is the contract; no query code exists yet |
-| `docvault migrate` wiring | [08 §2](08-ops.md) | **Not started** | The migration and seed are runnable; the CLI command arrives with S2 |
+| `docvault migrate` wiring | [08 §2](08-ops.md) | **Done** | Applies revisions, seeds, stamps the identity, audits `database.migrate`, and supports `--force-lock` |
 
 ## 5. Test evidence
 
-### 5.1 Unit suite — 67 passed
+### 5.1 Unit suite — 75 passed
 
 | File | What it proves |
 |---|---|
@@ -205,12 +223,13 @@ and SQLite is never used ([14 §8](14-development.md)).
 | `test_layout.py` | Layout creation, atomic write, private modes, symlink rejection, network filesystem rejection, relative root rejection, fan-out paths, idempotence |
 | `test_config.py` | Development shape, unknown keys, remote DSN refusal, relative root refusal, missing file, comment-preserving root rewrite |
 | `test_init.py` | Vault identity, second-init refusal, weak passphrase refusal, unlock, wrong-passphrase audit, status without unlock, lock release |
+| `test_credentials.py` | Credential path beside the config, `0600` round trip, missing and damaged files reported as `DB_CREDENTIAL_UNREADABLE`, production refused on non-Windows |
 | `test_http.py` | `/healthz`, locked `/readyz`, ready `/readyz`, request-ID echo, problem documents, unknown route |
 
 The unit suite is deliberately at the crypto and filesystem boundary. It proves the contracts
 that are cheapest to get wrong, not that the product works end to end.
 
-### 5.2 Integration suite — 33 passed
+### 5.2 Integration suite — 39 passed
 
 Every test creates a fresh database on the PostgreSQL 18.6 throwaway cluster, runs the Alembic
 migration, and drops the database. The fixture skips, rather than falls back to SQLite, when the
@@ -220,16 +239,27 @@ cluster is absent.
 |---|---|
 | `test_schema.py` | All 24 tables exist; downgrade empties the schema and upgrade restores it; native enums; capability masks (`print` requires `read`, mask ≤ 63); ACL trigger rejects deleted objects and unknown subjects; two-level `doc_types`; `version_count`; `current_version_id` ownership; version immutability; append-only audit (`UPDATE`/`DELETE`/`TRUNCATE`); legal-hold and delete-before-purge guards; deferred `self`-link rule; `updated_at` trigger; `settings` value/`value_enc` exclusivity; partial indexes |
 | `test_seed.py` | 8 categories and 73 types; every type has a category; idempotent second run; renamed type survives; names are encrypted; front/back `side` hints; defaults match [13 §4](13-classification.md); a reparented code raises `SEED_CONFLICT` |
+| `test_bootstrap.py` | Provisioning creates an unprivileged role that owns its database; a second run adopts the pair; the app role cannot `CREATE DATABASE` (SQLSTATE `42501`); migration is idempotent and reports the head; bootstrap seeds, stamps `vault_id` and `schema_version`, refuses a stranger's vault ID, and does not restamp on a second run; the server check accepts PostgreSQL 18 |
 
 ### 5.3 Manually verified on 2026-10-28
 
-A fresh development vault was created under `/tmp`, then inspected:
+A fresh development vault was created under `/tmp`, against the 5433 cluster, then inspected:
 
-- `init` created the layout, manifest, 96-byte key file, audit entry, CA, and server certificate.
-- `status` reported one audit entry, `lock: free`, `blob_count: 0`, and `audit_chain: ok`.
-- `doctor` reported every check **PASS** except the database connection, which is expected until
-  S2.
-- `unlock` accepted the passphrase, verified the manifest, and released the lock on exit.
+- `init` prompted for the admin password and passphrase, created the `docvault_app` role and
+  `docvault` database, wrote `docvault-db.cred` with mode `0600`, created the layout, manifest,
+  96-byte key file and audit entry, and rewrote `[vault].root` in the TOML file.
+- It then applied revision `c02412ca4b8b` and seeded 8 categories and 73 types, reporting
+  `schema 1 … 81 inserted` and auditing `database.migrate`.
+- `status` reported the vault identity, `database: docvault (credential present)`, `lock: free`,
+  `blob_count: 0`, `audit_entries: 3`, `last_dump: none`, and `audit_chain: ok`.
+- `doctor` reported **PASS** for configuration, vault root, manifest, filesystem, key file, audit
+  chain, PostgreSQL tools (18.6), credential, and server. TLS was **FAIL** because the run used
+  `--no-tls`; the vault key check was **FAIL** because the shell had no terminal for the
+  passphrase — the documented reason for that check.
+- A second `migrate` was a no-op (`0 inserted`), and `init --reuse-vault` adopted the role and
+  database, rewrote the credential, and left the manifest and key file untouched.
+- The test database and role were dropped afterwards, so no throwaway identity is left in the
+  cluster.
 
 The schema was also checked by hand on `docvault_migrate` on port 5433: upgrade, downgrade to
 base, and upgrade again; `alembic check` reports **No new upgrade operations detected**.
@@ -239,6 +269,8 @@ base, and upgrade again; `alembic check` reports **No new upgrade operations det
 | Gap | Consequence |
 |---|---|
 | Windows filesystem and path handling | The production target is unexercised |
+| DPAPI credential sealing | The ctypes call is written and reviewed, never executed; the Linux file path is what the tests cover |
+| `serve` against a mismatched database | The identity check is exercised through `doctor` and the integration tests, not by starting the HTTPS listener |
 | Concurrent processes and heartbeat failure | Stale-lock takeover is tested by writing a file, not by killing a live writer |
 | Large streamed uploads and disk-full behaviour | The streaming writer is tested with 9 KB, not a 100 MB document |
 | Crash injection during `init`, blob write, or dump | Cleanup paths are reasoned about, not fault-injected |
@@ -253,13 +285,13 @@ allowed only while this table says so; a gap without a slice is a defect.
 
 | ID | Design expects | Current build | Resolution |
 |---|---|---|---|
-| IMP-01 | `docvault init` provisions the role, database, schema, seed catalogue, and first dump ([08 §2](08-ops.md), [09 §1](09-flows.md)) | Creates the vault and TLS only; prints that the database is not provisioned | **S2** |
+| IMP-01 | `docvault init` provisions the role, database, schema, seed catalogue, and first dump ([08 §2](08-ops.md), [09 §1](09-flows.md)) | Creates the vault, TLS, role, database, credential, schema, and seed. The first encrypted dump is not written | **S2b** |
 | IMP-02 | A running service can be unlocked and locked through IPC ([08 §7](08-ops.md)) | `unlock` proves the passphrase in a short-lived process; `lock` exits **1** with a pending-IPC message | **S3** |
-| IMP-03 | Automatic unlock uses DPAPI/keyring when opted in ([15 §6.3](15-production-setup.md)) | `vault.auto_unlock` is parsed, but `serve` refuses with `CONFIG_INVALID` | **S2/S3** |
-| IMP-04 | Schema, Alembic migrations, seeded document types, constraints, triggers, and indexes ([04](04-data-model.md)) | All 24 tables and the seed catalogue exist, with revision `c02412ca4b8b` and 33 integration tests against PostgreSQL 18 | **Closed 2026-10-28 (S1)** |
-| IMP-05 | Encrypted `DVD1` dumps, `LATEST`, backup, restore, and pre-migration dumps ([03 §9](03-vault-format.md), [08 §3–4](08-ops.md)) | No dump format implementation and no commands | **S2** |
-| IMP-06 | Database credential stored in DPAPI or the OS keyring, never in TOML ([02 §6.3](02-architecture.md)) | No credential storage | **S2** |
-| IMP-07 | `doctor` checks the live database and its version ([08 §1](08-ops.md)) | Reports **FAIL** unconditionally with the DSN, so the command exits **1** until S2 | **S2** |
+| IMP-03 | Automatic unlock uses DPAPI/keyring when opted in ([15 §6.3](15-production-setup.md)) | `vault.auto_unlock` is parsed, but `serve` refuses with `CONFIG_INVALID`; the database credential uses DPAPI, the vault key does not | **S3/S8** |
+| IMP-04 | Schema, Alembic migrations, seeded document types, constraints, triggers, and indexes ([04](04-data-model.md)) | All 24 tables and the seed catalogue exist, with revision `c02412ca4b8b` and 33 schema/seed integration tests (39 today) against PostgreSQL 18 | **Closed 2026-10-28 (S1)** |
+| IMP-05 | Encrypted `DVD1` dumps, `LATEST`, backup, restore, and pre-migration dumps ([03 §9](03-vault-format.md), [08 §3–4](08-ops.md)) | No dump format implementation and no commands | **S2b** |
+| IMP-06 | Database credential stored in DPAPI or the OS keyring, never in TOML ([02 §6.3](02-architecture.md)) | Machine-scope DPAPI on Windows (written, unexecuted); `0600` file beside the config on Linux development; keyring not wired | **Closed for v1 Linux development 2026-10-28 (S2a); keyring is S8** |
+| IMP-07 | `doctor` checks the live database and its version ([08 §1](08-ops.md)) | Checks the credential, server major, identity, and schema when a terminal supplies the passphrase | **Closed 2026-10-28 (S2a)** |
 | IMP-08 | Auth, sessions, CSRF, lockout, roles, and the single ACL gate ([06](06-rbac-acl.md), [07 §2](07-api.md)) | No sessions and no permission code | **S3** |
 | IMP-09 | Entities, persons, identifiers, documents, versions, uploads, downloads, and audit database writes ([07 §4–5](07-api.md)) | No routes beyond health | **S4** |
 | IMP-10 | Office intake converts once at ingest to a derived PDF; previews are encrypted renditions ([10 ADR-038](10-decisions.md), [11](11-frontend.md)) | No render worker; `office.convert_exe` is parsed but unused | **S5** |
@@ -306,13 +338,34 @@ values, `settings.value`, `row_version`, D-4/D-6/D-10, and the version immutabil
 
 ### S2 — Provisioning, credentials, and dumps
 
-**Build:** `init` creates the `docvault_app` role and `docvault` database when given an admin
-connection, stores the credential outside the vault, runs migrations, seeds the catalogue, and
-writes the first encrypted `DVD1` dump plus `LATEST`. Add `backup`, `restore`, and `dump-list`.
-Wire the real database checks into `doctor` and the last-dump line into `status`.
+Split in two so the database path could be tested before the dump format existed.
+
+#### S2a — Provisioning, credentials, and `migrate` — **done 2026-10-28**
+
+**Build:** `init` creates the `docvault_app` role and `docvault` database from an admin
+connection, stores the credential outside the vault, applies the migrations, seeds the catalogue,
+and stamps the vault identity. Wire the real database checks into `doctor` and `serve`.
 
 **Exit criteria:** a fresh `init` produces a database the app can open; `doctor` passes on a
-correct host; a dump restores into an empty cluster; a wrong passphrase or wrong vault ID refuses.
+correct host; a wrong vault ID refuses.
+
+**Delivered:** `app/db/` gained `connect`, `provision`, `credentials`, `migrate`, `identity`,
+`schema`, and `bootstrap`; `init` grew `--admin-dsn`, `--no-database`, and `--reuse-vault`;
+`docvault migrate [--force-lock]` applies revisions, seeds, stamps, and audits; `doctor` checks the
+credential, live server, identity, and schema; `serve` refuses a mismatched database;
+`MIGRATION_FAILED` was added to the error catalog. 6 integration tests and 8 credential unit
+tests; the suite is 75 unit + 39 integration. Verified end to end against the 5433 cluster.
+
+#### S2b — Encrypted dumps — **next**
+
+**Build:** the `DVD1` chunked container and its `LATEST` pointer ([03 §9](03-vault-format.md)),
+`docvault backup`, `docvault restore`, and `docvault dump-list` ([08 §3–4](08-ops.md)), the first
+dump at the end of `init`, the pre-migration dump at the start of `migrate`, and the real
+last-dump line in `status`.
+
+**Exit criteria:** a dump restores into an empty cluster; a truncated dump fails its tag check and
+is refused; a wrong passphrase or wrong vault ID refuses; `LATEST` only moves after the dump is
+durable.
 
 ### S3 — Authentication, sessions, and the permission gate
 

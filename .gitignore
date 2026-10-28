@@ -222,3 +222,4 @@ __marimo__/
 # DocVault development (docs/14)
 /var/
 /config/dev.toml
+/config/*.cred
