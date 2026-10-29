@@ -221,9 +221,29 @@ through list endpoints.
 `property`), `confidentiality`, `status`, `from`, `to`, `q`, and paging parameters. `category` is
 resolved through the type, so a filter on `property` returns every document whose type belongs to
 that category, without a second stored column (`13` §3).
+`q` is a case-insensitive substring match against decrypted titles after ACL and structured filters
+have narrowed the candidate set. It scans at most 10,000 candidates and returns `413` if the search
+would exceed that bound; callers can add filters and retry.
 
 `PATCH /documents/{id}` may raise `confidentiality` with `write`. Lowering it is admin-only and
 returns `422` with a field error otherwise, audited with the old and new level (`13` §6).
+
+`POST /documents/{id}/versions` uses the same multipart `metadata` and `file` parts as the initial
+upload. Its metadata accepts only an optional `note`; the document metadata is unchanged. Supply an
+`Idempotency-Key`; an exact retry returns the original version response, while reusing the key with
+different metadata or file content returns `409`.
+
+Version responses include a stable version `id`; use it as `version_id` in a print-job request.
+`GET /tags` lists decrypted tag names for an authenticated user; `POST /tags` creates or returns a
+tag. Link and document-tag `POST`/`DELETE` routes require `write` plus `If-Match`, increment the
+document ETag only when membership changes, and append audit events. Global `DELETE /tags/{id}` is
+admin-only and detaches the tag from documents without deleting those documents.
+
+`POST /documents/{id}/purge` is administrator-only and requires a reason of 10–500 characters.
+The document must be soft-deleted, outside its `purge_after` retention window, and not under legal
+hold. The operation overwrites and unlinks original, derived, and rendition blobs, invalidates
+download tickets, removes rendition recipes/cache rows, and leaves document/version tombstones
+with a `document.purge` audit event.
 
 ### 5.1 Uploading a document
 
@@ -273,12 +293,14 @@ What the server does, in order:
 | 6 | Return `201` with the document, version, and `ETag` |
 | 7 | The same `Idempotency-Key` within 24 hours returns the original `201` body, not a duplicate |
 
-The response includes
-`"version": {"version_no": 1, "plaintext_size": 48213, "mime": "application/pdf"}`.
+The version object includes its stable `id` for use in render and print requests:
+`"version": {"id": "0192...", "version_no": 1, "plaintext_size": 48213, "mime": "application/pdf", "derived_pdf": null}`.
 
 An Office upload returns `201` only after the conversion succeeds, with
 `"derived_pdf": {"pages": 4, "size": 118422}` in the version object, so the user can see that a
-readable copy exists before they rely on it.
+readable copy exists before they rely on it. If no executable Office converter is configured, the
+upload is rejected with `415`; the original Office file is encrypted and retained alongside the
+derived PDF when conversion succeeds.
 
 ### 5.2 Downloading a document
 
@@ -305,7 +327,7 @@ Cookie: dv_session=...
 | `Cache-Control: no-store`, `Content-Disposition: attachment` | No browser caching, no inline rendering |
 | `Content-Type` comes from the stored sniffed MIME type | Prevents content-type confusion |
 | Every download is audited with document, version, and size | Accountability |
-| Range requests are supported | Large PDFs on a slow network |
+| Single byte ranges are supported | Large PDFs on a slow network; unsatisfiable and multi-range requests return `416` |
 
 ### 5.3 The permission payload
 
@@ -398,24 +420,26 @@ Saving a recipe **does not create a version** and does not change `blob_addr`. I
 
 | Rule | Reason |
 |---|---|
-| The response **is** the PDF: `Content-Type: application/pdf`, `Content-Disposition: inline` | One round trip, streamed |
+| The response **is** the PDF: `Content-Type: application/pdf`, `Content-Disposition: inline` | One round trip |
 | `Cache-Control: no-store` | The job must not survive in a cache |
 | No `Location` for a stored file, because none is stored | There is no artifact to fetch twice |
-| The job row is written **before** generation | A crashed job is still visible in the audit |
+| The job row is written **before** generation; `X-Print-Job-ID` identifies it | A crash leaves it interrupted until startup recovery marks it failed and records the terminal audit event |
+| `GET /print-jobs` and `GET /print-jobs/{id}` return metadata only | Caller must be able to view every source document; admins see all |
 | `404` if any item is not visible; `403` naming `print` if visible but not printable; `403 PRINT_RESTRICTED` if the item is `restricted` and the grant is not explicit | `06` §6, `13` §6 |
-| `422` for a bad range, bad layout, or over the item/page limits | Errors name the item index |
+| `422` for a bad range, bad layout, or over 100 items / 500 pages; `413` over 32 MiB of unique sources | Errors name the item index |
 | `504` if generation exceeds 120 s | The connection is closed, not left hanging |
 | `Idempotency-Key` is ignored; a reprint is a new job | Two prints are two facts |
 
 The frontend opens the response in a new tab and calls the browser's print dialog (`11` §10).
-There is no client-side PDF assembly.
+Saved recipes are applied in the isolated worker. The output is validated before it is returned;
+there is no client-side PDF assembly.
 
 ## 6. Taxonomy, search, audit, and vault
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` `POST` | `/doc-types` | `GET` returns the whole two-level tree: categories, each with `types[]`, and every row carrying `code`, `name`, `default_confidentiality`, `requires_expiry`, `retention_months`, `is_system`. `POST` is admin-only; `code` cannot change after creation. |
-| `PATCH` `DELETE` | `/doc-types/{id}` | Admin. Rename, re-parent within the two-level limit, or change the default sensitivity. Delete is refused if documents use the type (`409`, with the document count); seeded rows (`is_system`) cannot be deleted at all (`13` §9). |
+| `GET` `POST` | `/doc-types` | `GET` returns the whole two-level tree: categories, each with `types[]`, and every row carrying `code`, `name`, `parent_id`, `default_confidentiality`, `requires_expiry`, `retention_months`, `side`, `purpose`, `is_system`, `sort_order`, and `row_version`. `POST` is admin-only; `code` cannot change after creation. |
+| `PATCH` `DELETE` | `/doc-types/{id}` | Admin; both require `If-Match`, and updates return a new ETag. Rename, re-parent within the two-level limit, or change defaults. Delete is refused if documents use the type (`409`, with the document count), if a category still has types, or for seeded rows (`is_system`; `13` §9). |
 | `GET` `POST` | `/tags` | |
 | `DELETE` | `/tags/{id}` | Detaches from documents; does not delete documents |
 | `GET` | `/search` | Metadata search across entities and documents, permission-filtered |

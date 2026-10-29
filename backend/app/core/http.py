@@ -51,10 +51,12 @@ def new_request_id() -> str:
 
 def _problem_response(request: Request, error: DocVaultError) -> JSONResponse:
     problem = error.to_problem(instance=request.url.path, request_id=request_id_for(request))
+    headers = {"Retry-After": str(error.retry_after)} if error.retry_after is not None else None
     return JSONResponse(
         status_code=error.status,
         content=problem.model_dump(mode="json", exclude_none=False),
         media_type="application/problem+json",
+        headers=headers,
     )
 
 

@@ -8,21 +8,36 @@ partial indexes, and PL/pgSQL triggers (docs/14 §6, docs/17 S1).
 from __future__ import annotations
 
 import os
+import secrets
 import uuid
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import Connection, create_engine, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import OperationalError
 
+from app.db.provision import provision
 from app.db.seed import SeedResult, seed_catalogue
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ADMIN_DSN = "postgresql+psycopg://postgres@127.0.0.1:5433/postgres"
 ADMIN_DSN_ENV = "DOCVAULT_TEST_PG_DSN"
+
+
+@dataclass(frozen=True, slots=True)
+class Pair:
+    """A freshly provisioned app role, its database, and both DSN spellings."""
+
+    role: str
+    database: str
+    password: str
+    dsn: str
+    libpq_dsn: str
 
 
 def _admin_dsn() -> str:
@@ -57,6 +72,35 @@ def pg_admin_dsn() -> str:
     if not 180_000 <= version < 190_000:
         pytest.skip(f"PostgreSQL 18 is required; the server reports {version}.")
     return dsn
+
+
+@pytest.fixture
+def pair(pg_admin_dsn: str) -> Iterator[Pair]:
+    """Provision a role and database, then drop both, even on failure."""
+    suffix = uuid.uuid4().hex[:10]
+    role = f"docvault_test_{suffix}"
+    database = f"docvault_test_{suffix}"
+    password = secrets.token_urlsafe(24)
+    provision(pg_admin_dsn, database=database, role=role, password=password)
+    url = make_url(pg_admin_dsn).set(username=role, password=password, database=database)
+    # The subprocess DSN never carries the password; PGPASSFILE supplies it.
+    libpq = url.set(drivername="postgresql", password=None)
+    try:
+        yield Pair(
+            role=role,
+            database=database,
+            password=password,
+            dsn=url.render_as_string(hide_password=False),
+            libpq_dsn=libpq.render_as_string(hide_password=False),
+        )
+    finally:
+        admin = create_engine(pg_admin_dsn, isolation_level="AUTOCOMMIT")
+        try:
+            with admin.connect() as connection:
+                connection.execute(text(f'DROP DATABASE IF EXISTS "{database}" WITH (FORCE)'))
+                connection.execute(text(f'DROP ROLE IF EXISTS "{role}"'))
+        finally:
+            admin.dispose()
 
 
 def _alembic_config(url: str) -> Config:

@@ -540,7 +540,7 @@ implicit.
 | Render worker crashes mid-preview | Cache unchanged | Nothing | Next request restarts the worker. The document is untouched. |
 | Render worker killed by its memory ceiling | Cache unchanged | Nothing | Typed `507`; the page is skipped, other pages still render |
 | Process killed while writing a rendition | `.part` swept later | Rendition row not committed | Cache miss on next request. No data loss. |
-| Process killed mid-print | Nothing written | Job row stays `running` | Reconciliation marks it `interrupted`. No partial file exists. |
+| Process killed mid-print | No print artifact | Job stays `interrupted` | Next service startup marks it `failed` and appends the terminal audit event. |
 | Print client closes the tab mid-stream | Nothing written | Job `completed` with bytes sent | The user prints again. Two jobs, two records. |
 | Rendition cache deleted entirely | Documents and dumps intact | `renditions` rows dangle | Harmless. Rebuilt on demand. `verify` reports 0 problems. |
 | Vault folder lost | — | Intact | Metadata is useless without content. Restore the folder from backup. |

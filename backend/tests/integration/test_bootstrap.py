@@ -7,14 +7,10 @@ most likely to be wrong.
 
 from __future__ import annotations
 
-import secrets
 import uuid
-from collections.abc import Iterator
-from dataclasses import dataclass
 
 import pytest
 from sqlalchemy import create_engine, text
-from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 
 from app.core.errors import DocVaultError
@@ -22,47 +18,10 @@ from app.db import bootstrap, connect, migrate
 from app.db.provision import provision
 from app.db.schema import SCHEMA_VERSION
 
+from .conftest import Pair
+
 VAULT_ID = "0192f0c4-7a1e-7c3b-9a55-2c1f0b6d4e11"
 STRANGER_ID = "0192f0c4-0000-7000-8000-000000000000"
-
-
-@dataclass(frozen=True, slots=True)
-class Pair:
-    """A freshly provisioned app role, its database, and its DSN."""
-
-    role: str
-    database: str
-    password: str
-    dsn: str
-
-
-@pytest.fixture
-def pair(pg_admin_dsn: str) -> Iterator[Pair]:
-    suffix = uuid.uuid4().hex[:10]
-    role = f"docvault_test_{suffix}"
-    database = f"docvault_test_{suffix}"
-    password = secrets.token_urlsafe(24)
-    provision(pg_admin_dsn, database=database, role=role, password=password)
-    url = make_url(pg_admin_dsn).set(
-        username=role,
-        password=password,
-        database=database,
-    )
-    try:
-        yield Pair(
-            role=role,
-            database=database,
-            password=password,
-            dsn=url.render_as_string(hide_password=False),
-        )
-    finally:
-        admin = create_engine(pg_admin_dsn, isolation_level="AUTOCOMMIT")
-        try:
-            with admin.connect() as connection:
-                connection.execute(text(f'DROP DATABASE IF EXISTS "{database}" WITH (FORCE)'))
-                connection.execute(text(f'DROP ROLE IF EXISTS "{role}"'))
-        finally:
-            admin.dispose()
 
 
 def test_provision_creates_an_unprivileged_role_and_its_database(
@@ -105,7 +64,7 @@ def test_migrate_is_idempotent_and_reports_the_head(pair: Pair) -> None:
     engine = create_engine(pair.dsn)
     try:
         with engine.connect() as connection:
-            assert migrate.current_revision(connection) == "c02412ca4b8b"
+            assert migrate.current_revision(connection) == "7e4c2b9a1f30"
     finally:
         engine.dispose()
 

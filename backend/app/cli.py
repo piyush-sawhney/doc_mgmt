@@ -13,11 +13,14 @@ import secrets
 import shutil
 import subprocess
 import sys
-from collections.abc import Sequence
+import uuid
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import uvicorn
+from sqlalchemy import delete, select, text
 from sqlalchemy.engine import Engine, make_url
+from sqlalchemy.orm import Session
 
 from app.core.config import LoadedSettings, load_settings, write_vault_root
 from app.core.errors import DocVaultError
@@ -25,16 +28,22 @@ from app.core.logging import configure_logging
 from app.core.tls import TlsMaterial, generate_tls, public_fingerprint, tls_directory
 from app.crypto.keys import VaultKeys, derive_keys, unwrap_vmk
 from app.crypto.passphrase import validate_passphrase
-from app.db import bootstrap, connect
+from app.db import backup, bootstrap, connect, migrate
 from app.db.credentials import (
     Credential,
     credential_path,
     load_credential,
     save_credential,
 )
+from app.db.enums import RoleName
+from app.db.models.identity import Session as AuthSession
+from app.db.models.identity import User
 from app.db.provision import DEFAULT_DATABASE, DEFAULT_ROLE, provision
 from app.main import create_app
+from app.services.audit import append_event as append_audit_event
+from app.services.auth import create_user
 from app.vault import audit
+from app.vault.control import VaultControlServer, send_control_command
 from app.vault.init import create_vault
 from app.vault.inspect import inspect
 from app.vault.layout import probe_root, vault_paths
@@ -144,10 +153,120 @@ def _keys_without_lock(root: Path, passphrase: str) -> VaultKeys:
     return keys
 
 
+def _backup_context(
+    loaded: LoadedSettings,
+    manager: VaultManager,
+    credential: Credential,
+) -> backup.BackupContext:
+    """Resolve the schema and server version, then package everything a dump needs."""
+    engine = bootstrap.engine_for(loaded, credential)
+    try:
+        info = connect.require_supported_server(engine)
+        with engine.connect() as connection:
+            identity = bootstrap.check_bootstrap(
+                connection,
+                meta_key=manager.keys.meta_key,
+                vault_id=manager.manifest.vault_id,
+            )
+    finally:
+        engine.dispose()
+    return backup.BackupContext(
+        paths=manager.paths,
+        dsn=loaded.settings.database.dsn,
+        credential=credential,
+        pg_bin_dir=loaded.settings.database.pg_bin_dir,
+        dump_key=manager.keys.dump_key,
+        vault_id=manager.manifest.vault_id,
+        schema_version=identity.schema_version,
+        server_version=info.version,
+        keep=loaded.settings.backup.keep,
+    )
+
+
+def _restore_context(
+    loaded: LoadedSettings,
+    manager: VaultManager,
+    credential: Credential,
+) -> backup.BackupContext:
+    """A context for restoring: the target database is empty, so it has no identity yet."""
+    engine = bootstrap.engine_for(loaded, credential)
+    try:
+        info = connect.require_supported_server(engine)
+    finally:
+        engine.dispose()
+    return backup.BackupContext(
+        paths=manager.paths,
+        dsn=loaded.settings.database.dsn,
+        credential=credential,
+        pg_bin_dir=loaded.settings.database.pg_bin_dir,
+        dump_key=manager.keys.dump_key,
+        vault_id=manager.manifest.vault_id,
+        schema_version=manager.manifest.schema_version,
+        server_version=info.version,
+        keep=loaded.settings.backup.keep,
+    )
+
+
+def _dump(
+    loaded: LoadedSettings,
+    manager: VaultManager,
+    credential: Credential,
+    *,
+    pre_migration: bool = False,
+) -> backup.DumpPointer:
+    """Write one dump, audit it, and print the two facts an operator needs."""
+    context = _backup_context(loaded, manager, credential)
+    pointer = backup.create_backup(context, pre_migration=pre_migration)
+    manager.record_event(
+        "database.dump",
+        object_type="database",
+        object_id=pointer.vault_id,
+        detail={
+            "file": pointer.file,
+            "sha256": pointer.sha256,
+            "size": pointer.size,
+            "plaintext_bytes": pointer.plaintext_bytes,
+            "pre_migration": pointer.pre_migration,
+        },
+    )
+    label = "pre-migration dump" if pointer.pre_migration else "dump"
+    print(f"{label}: {pointer.file} ({pointer.size} bytes, sha256 {pointer.sha256[:12]}…)")
+    return pointer
+
+
+def _read_only_context(
+    loaded: LoadedSettings,
+    root: Path,
+    keys: VaultKeys,
+    credential: Credential,
+) -> backup.BackupContext:
+    """Build a context without the writer lock, for ``dump-list``."""
+    identity = validate_structure(load_manifest(vault_paths(root).manifest))
+    engine = bootstrap.engine_for(loaded, credential)
+    try:
+        info = connect.require_supported_server(engine)
+    finally:
+        engine.dispose()
+    return backup.BackupContext(
+        paths=vault_paths(root),
+        dsn=loaded.settings.database.dsn,
+        credential=credential,
+        pg_bin_dir=loaded.settings.database.pg_bin_dir,
+        dump_key=keys.dump_key,
+        vault_id=identity.vault_id,
+        schema_version=identity.schema_version,
+        server_version=info.version,
+        keep=loaded.settings.backup.keep,
+    )
+
+
 def _migrate_and_seed(
     loaded: LoadedSettings, manager: VaultManager, credential: Credential
 ) -> None:
-    """Apply migrations, then seed and stamp the identity. Caller owns the lock."""
+    """Dump if a migration is pending, apply it, then seed and stamp the identity."""
+    revision = _schema_revision(loaded, credential)
+    if revision is not None and revision != migrate.head_revision():
+        _dump(loaded, manager, credential, pre_migration=True)
     bootstrap.migrate_database(loaded, credential)
     engine = bootstrap.engine_for(loaded, credential)
     try:
@@ -174,6 +293,15 @@ def _migrate_and_seed(
         f"{result.seed.categories_total} categories, {result.seed.types_total} types "
         f"({result.seed.inserted} inserted)"
     )
+
+
+def _schema_revision(loaded: LoadedSettings, credential: Credential) -> str | None:
+    engine = bootstrap.engine_for(loaded, credential)
+    try:
+        with engine.connect() as connection:
+            return migrate.current_revision(connection)
+    finally:
+        engine.dispose()
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
@@ -228,6 +356,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
             manager.open()
             manager.unlock(passphrase)
             _migrate_and_seed(loaded, manager, credential)
+            _dump(loaded, manager, credential)
         finally:
             manager.close()
 
@@ -380,6 +509,21 @@ def _doctor_database(
             checks.append(_check("database server", False, f"{exc.code}: {exc.detail}"))
             return
         checks.append(_check("database server", True, f"PostgreSQL {info.version}"))
+        client_problem: str | None = None
+        for name in ("pg_dump", "pg_restore"):
+            try:
+                tool = backup.tool_path(loaded.settings.database.pg_bin_dir, name)
+                backup.require_client_version(tool, info.version)
+            except DocVaultError as exc:
+                client_problem = f"{exc.code}: {exc.detail}"
+                break
+        checks.append(
+            _check(
+                "postgres client",
+                client_problem is None,
+                client_problem or f"pg_dump and pg_restore are at least {info.version}",
+            )
+        )
         _doctor_identity(checks, engine, meta_key=meta_key, vault_id=vault_id)
     finally:
         engine.dispose()
@@ -473,18 +617,15 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
 
 def _cmd_unlock(args: argparse.Namespace) -> int:
     loaded = _load(args)
-    settings = loaded.settings
-    manager = VaultManager(settings.require_vault_root(), app_version=__version__)
-    try:
-        manager.open()
-        passphrase = _prompt_passphrase(confirm=False)
-        identity = manager.unlock(passphrase)
-        print(f"unlocked: {identity.vault_id}")
-        print(f"key_fingerprint: {identity.key_fingerprint}")
-        print("note: this build verifies the passphrase locally; live unlock IPC is pending")
-        return EXIT_OK
-    finally:
-        manager.close()
+    passphrase = _prompt_passphrase(confirm=False)
+    result = send_control_command(
+        loaded.settings.require_vault_root(),
+        "unlock",
+        passphrase=passphrase,
+    )
+    print(f"unlocked: {result['vault_id']}")
+    print(f"key_fingerprint: {result['key_fingerprint']}")
+    return EXIT_OK
 
 
 def _cmd_migrate(args: argparse.Namespace) -> int:
@@ -502,10 +643,146 @@ def _cmd_migrate(args: argparse.Namespace) -> int:
         manager.close()
 
 
+def _cmd_backup(args: argparse.Namespace) -> int:
+    loaded = _load(args)
+    root = loaded.settings.require_vault_root()
+    manager = VaultManager(root, app_version=__version__, force_lock=args.force_lock)
+    try:
+        manager.open()
+        _unlock(manager)
+        credential = bootstrap.credential_for(loaded)
+        _dump(loaded, manager, credential)
+        return EXIT_OK
+    finally:
+        manager.close()
+
+
+def _cmd_restore(args: argparse.Namespace) -> int:
+    loaded = _load(args)
+    root = args.vault.expanduser().resolve()
+    manager = VaultManager(root, app_version=__version__, force_lock=args.force_lock)
+    try:
+        manager.open()
+        _unlock(manager)
+        credential = bootstrap.credential_for(loaded)
+        context = _restore_context(loaded, manager, credential)
+        result = backup.restore_dump(context, name=args.dump)
+        engine = bootstrap.engine_for(loaded, credential)
+        try:
+            with engine.connect() as connection:
+                identity = bootstrap.check_bootstrap(
+                    connection,
+                    meta_key=manager.keys.meta_key,
+                    vault_id=manager.manifest.vault_id,
+                )
+        except DocVaultError as exc:
+            manager.record_event(
+                "vault.restore.deny",
+                object_type="vault",
+                object_id=manager.manifest.vault_id,
+                outcome="deny",
+                detail={"file": result.file, "reason": exc.code},
+            )
+            raise
+        finally:
+            engine.dispose()
+        manager.record_event(
+            "vault.restore",
+            object_type="vault",
+            object_id=manager.manifest.vault_id,
+            detail={
+                "file": result.file,
+                "plaintext_bytes": result.plaintext_bytes,
+                "schema_version": identity.schema_version,
+                "from_latest": result.from_latest,
+            },
+        )
+        print(f"restored: {result.file} ({result.plaintext_bytes} plaintext bytes)")
+        print(f"database: schema {identity.schema_version}, vault {identity.vault_id}")
+        print("next: run docvault verify --deep, then start the service")
+        return EXIT_OK
+    finally:
+        manager.close()
+
+
+def _cmd_dump_list(args: argparse.Namespace) -> int:
+    loaded = _load(args)
+    root = loaded.settings.require_vault_root()
+    passphrase = _prompt_passphrase(confirm=False)
+    keys = _keys_without_lock(root, passphrase)
+    credential = bootstrap.credential_for(loaded)
+    context = _read_only_context(loaded, root, keys, credential)
+    listing = backup.list_dump(context, name=args.dump)
+    print(listing, end="" if listing.endswith("\n") else "\n")
+    return EXIT_OK
+
+
+def _cmd_user_create(args: argparse.Namespace) -> int:
+    """Create the initial admin account before browser-based administration."""
+    loaded = _load(args)
+    root = loaded.settings.require_vault_root()
+    manager = VaultManager(root, app_version=__version__)
+    try:
+        manager.open()
+        _unlock(manager)
+        credential = bootstrap.credential_for(loaded)
+        engine = bootstrap.engine_for(loaded, credential)
+        temporary_password = secrets.token_urlsafe(18)
+        try:
+            connect.require_supported_server(engine)
+            with engine.begin() as connection:
+                bootstrap.check_bootstrap(
+                    connection,
+                    meta_key=manager.keys.meta_key,
+                    vault_id=manager.manifest.vault_id,
+                )
+                connection.execute(text("SELECT pg_advisory_xact_lock(1146309705)"))
+                existing_user = connection.execute(select(User.id).limit(1)).first()
+                if existing_user is not None:
+                    raise DocVaultError(
+                        "FORBIDDEN",
+                        detail="CLI user creation is only available before the first account.",
+                        remediation="Sign in as an administrator and use POST /api/v1/users.",
+                    )
+                if RoleName.ADMIN not in args.role:
+                    raise DocVaultError(
+                        "VALIDATION_FAILED",
+                        detail="The initial account must include the admin role.",
+                    )
+                with Session(bind=connection) as session:
+                    user = create_user(
+                        session,
+                        manager.keys,
+                        username=args.username,
+                        display_name=args.display_name or args.username,
+                        password=temporary_password,
+                        roles=tuple(args.role),
+                        actor_id=None,
+                        source_ip=None,
+                    )
+                    user_id = user.id
+        finally:
+            engine.dispose()
+        manager.record_event(
+            "user.create",
+            object_type="user",
+            object_id=str(user_id),
+            detail={"source": "initial_cli"},
+        )
+        print(f"user: {args.username}")
+        print(f"user_id: {user_id}")
+        print(f"temporary_password: {temporary_password}")
+        print("must_change_password: yes")
+        return EXIT_OK
+    finally:
+        manager.close()
+
+
 def _cmd_lock(_args: argparse.Namespace) -> int:
-    print("lock: a running service keeps its key in its own memory; IPC is pending in this build")
-    print("stop the service to drop the key")
-    return EXIT_ERROR
+    loaded = _load(_args)
+    send_control_command(loaded.settings.require_vault_root(), "lock")
+    print("locked: the running service dropped its vault keys")
+    return EXIT_OK
 
 
 def _resolve_tls(loaded: LoadedSettings, root: Path) -> tuple[Path | None, Path | None]:
@@ -544,7 +821,6 @@ def _cmd_serve(args: argparse.Namespace) -> int:
             detail="No TLS certificate found.",
             remediation="Run docvault init to generate the CA and server certificate.",
         )
-    app = create_app(loaded=loaded, vault=manager, app_version=__version__)
     try:
         credential = bootstrap.credential_for(loaded)
         engine = bootstrap.engine_for(loaded, credential)
@@ -558,19 +834,77 @@ def _cmd_serve(args: argparse.Namespace) -> int:
                 )
         finally:
             engine.dispose()
-        print(f"serving on https://{settings.server.bind}:{settings.server.port}")
-        uvicorn.run(
-            app,
-            host=settings.server.bind,
-            port=settings.server.port,
-            ssl_certfile=str(cert),
-            ssl_keyfile=str(key),
-            log_config=None,
-            access_log=False,
+        api_engine = bootstrap.engine_for(loaded, credential)
+        app = create_app(
+            loaded=loaded,
+            vault=manager,
+            db_engine=api_engine,
+            app_version=__version__,
         )
+        print(f"serving on https://{settings.server.bind}:{settings.server.port}")
+
+        def lock_service_sessions() -> int:
+            with api_engine.begin() as connection:
+                deleted = connection.execute(delete(AuthSession))
+                revoked = max(deleted.rowcount or 0, 0)
+                append_audit_event(
+                    connection,
+                    action="vault.lock",
+                    object_type="vault",
+                    object_id=uuid.UUID(manager.manifest.vault_id),
+                    actor_id=None,
+                    detail={"revoked_sessions": revoked},
+                )
+                return revoked
+
+        with VaultControlServer(manager, on_lock=lock_service_sessions):
+            uvicorn.run(
+                app,
+                host=settings.server.bind,
+                port=settings.server.port,
+                ssl_certfile=str(cert),
+                ssl_keyfile=str(key),
+                log_config=None,
+                access_log=False,
+            )
     finally:
         manager.close()
     return EXIT_OK
+
+
+def _simple_command(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+    name: str,
+    help_text: str,
+    func: Callable[[argparse.Namespace], int],
+) -> argparse.ArgumentParser:
+    """Register a command that needs only ``--config``."""
+    parser = subparsers.add_parser(name, help=help_text)
+    _add_config_argument(parser)
+    parser.set_defaults(func=func)
+    return parser
+
+
+def _add_user_commands(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    """Register local account bootstrap commands."""
+    user = subparsers.add_parser("user", help="Manage accounts")
+    user_commands = user.add_subparsers(dest="user_command", required=True)
+    create_user_parser = user_commands.add_parser(
+        "create", help="Create the first administrator account"
+    )
+    _add_config_argument(create_user_parser)
+    create_user_parser.add_argument("--username", required=True)
+    create_user_parser.add_argument("--display-name", default=None)
+    create_user_parser.add_argument(
+        "--role",
+        action="append",
+        type=RoleName,
+        choices=list(RoleName),
+        required=True,
+    )
+    create_user_parser.set_defaults(func=_cmd_user_create)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -610,29 +944,48 @@ def build_parser() -> argparse.ArgumentParser:
     )
     init.set_defaults(func=_cmd_init)
 
-    status = subparsers.add_parser("status", help="Show vault identity, lock, and counts")
-    _add_config_argument(status)
-    status.set_defaults(func=_cmd_status)
-
-    doctor = subparsers.add_parser("doctor", help="Check the environment one item at a time")
-    _add_config_argument(doctor)
-    doctor.set_defaults(func=_cmd_doctor)
-
-    unlock = subparsers.add_parser("unlock", help="Verify the passphrase and unwrap the vault key")
-    _add_config_argument(unlock)
-    unlock.set_defaults(func=_cmd_unlock)
+    _simple_command(subparsers, "status", "Show vault identity, lock, and counts", _cmd_status)
+    _simple_command(subparsers, "doctor", "Check the environment one item at a time", _cmd_doctor)
+    _simple_command(
+        subparsers, "unlock", "Verify the passphrase and unwrap the vault key", _cmd_unlock
+    )
 
     migrate = subparsers.add_parser("migrate", help="Apply migrations, then seed the catalogue")
     _add_config_argument(migrate)
     migrate.add_argument("--force-lock", action="store_true", help="Take over a stale vault lock")
     migrate.set_defaults(func=_cmd_migrate)
 
-    lock = subparsers.add_parser("lock", help="Drop the vault key from a running service")
-    _add_config_argument(lock)
-    lock.set_defaults(func=_cmd_lock)
+    backup_parser = subparsers.add_parser("backup", help="Write an encrypted database dump")
+    _add_config_argument(backup_parser)
+    backup_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Accepted for the operator checklist; every backup is forced in this build",
+    )
+    backup_parser.add_argument(
+        "--force-lock", action="store_true", help="Take over a stale vault lock"
+    )
+    backup_parser.set_defaults(func=_cmd_backup)
 
-    serve = subparsers.add_parser("serve", help="Run the HTTPS API")
-    _add_config_argument(serve)
+    restore = subparsers.add_parser("restore", help="Restore a dump into an empty database")
+    _add_config_argument(restore)
+    restore.add_argument("--vault", type=Path, required=True, help="Absolute path of the vault")
+    restore.add_argument("--dump", default=None, help="Dump file name; defaults to LATEST")
+    restore.add_argument("--force-lock", action="store_true", help="Take over a stale vault lock")
+    restore.set_defaults(func=_cmd_restore)
+
+    dump_list = subparsers.add_parser(
+        "dump-list", help="Print the table of contents of an encrypted dump"
+    )
+    _add_config_argument(dump_list)
+    dump_list.add_argument("--dump", default=None, help="Dump file name; defaults to LATEST")
+    dump_list.set_defaults(func=_cmd_dump_list)
+
+    _add_user_commands(subparsers)
+
+    _simple_command(subparsers, "lock", "Drop the vault key from a running service", _cmd_lock)
+
+    serve = _simple_command(subparsers, "serve", "Run the HTTPS API", _cmd_serve)
     serve.add_argument("--force-lock", action="store_true", help="Take over a stale vault lock")
     serve.set_defaults(func=_cmd_serve)
 

@@ -80,6 +80,29 @@ class DecryptedBlob:
     plaintext_len: int
 
 
+def write_blob_file(
+    encrypted: EncryptedBlob,
+    destination: Path,
+    temporary_path: Path,
+) -> None:
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(temporary_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb", closefd=False) as blob_file:
+            blob_file.write(encrypted.data)
+            blob_file.flush()
+            os.fsync(blob_file.fileno())
+        temporary_path.replace(destination)
+        directory_fd = os.open(destination.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        os.close(descriptor)
+        temporary_path.unlink(missing_ok=True)
+
+
 def padded_length(plaintext_len: int, pad_to: int) -> int:
     """Round up to the next padding bucket; ``pad_to <= 0`` disables padding."""
     if pad_to < 0 or pad_to > MAX_PAD_TO:
@@ -97,6 +120,26 @@ def _build_header(
     file_key = secrets.token_bytes(32)
     nonce_wrap = secrets.token_bytes(NONCE_LEN)
     nonce_payload = secrets.token_bytes(NONCE_LEN)
+    header = _pack_header(
+        keys,
+        plaintext_len,
+        pad_to,
+        file_key=file_key,
+        nonce_wrap=nonce_wrap,
+        nonce_payload=nonce_payload,
+    )
+    return header, file_key, nonce_payload
+
+
+def _pack_header(
+    keys: VaultKeys,
+    plaintext_len: int,
+    pad_to: int,
+    *,
+    file_key: bytes,
+    nonce_wrap: bytes,
+    nonce_payload: bytes,
+) -> bytes:
     wrapped_fk = AESGCM(keys.file_kek).encrypt(nonce_wrap, file_key, AAD_FILE_KEY)
     padded = padded_length(plaintext_len, pad_to) != plaintext_len
     flags = FLAG_PADDED if padded else 0
@@ -113,7 +156,7 @@ def _build_header(
     )
     if len(header) != HEADER_SIZE:  # pragma: no cover - a struct change would fail here
         raise DocVaultError("BLOB_INVALID", detail="The DVC1 header is not 96 bytes.")
-    return header, file_key, nonce_payload
+    return header
 
 
 def parse_header(data: bytes | memoryview) -> BlobHeader:
@@ -303,6 +346,132 @@ def write_blob(
     if written != plaintext_len:  # pragma: no cover - guarded by the read loop
         raise DocVaultError("BLOB_INVALID", detail="Short write.")
     return mac.hexdigest()
+
+
+class BlobStreamWriter:
+    """Incrementally write an unknown-length DVC1 stream as ciphertext."""
+
+    def __init__(
+        self,
+        destination: Path,
+        *,
+        max_plaintext_len: int,
+        keys: VaultKeys,
+        salt: bytes | None = None,
+        pad_to: int = DEFAULT_PAD_TO,
+    ) -> None:
+        if max_plaintext_len < 0:
+            raise DocVaultError("BLOB_INVALID", detail="The maximum plaintext length is invalid.")
+        if pad_to < 0 or pad_to > MAX_PAD_TO:
+            raise DocVaultError("BLOB_INVALID", detail="pad_to is outside the allowed range.")
+        chosen_salt = salt if salt is not None else secrets.token_bytes(SALT_LEN)
+        if len(chosen_salt) != SALT_LEN:
+            raise DocVaultError("BLOB_INVALID", detail="The address salt must be 16 bytes.")
+        self.destination = destination
+        self.max_plaintext_len = max_plaintext_len
+        self.keys = keys
+        self.salt = chosen_salt
+        self.pad_to = pad_to
+        self.length = 0
+        self._mac = blob_address_hmac(keys.addr_key, chosen_salt)
+        self._file_key = secrets.token_bytes(32)
+        self._nonce_wrap = secrets.token_bytes(NONCE_LEN)
+        self._nonce_payload = secrets.token_bytes(NONCE_LEN)
+        self._encryptor = Cipher(
+            algorithms.AES(self._file_key), modes.GCM(self._nonce_payload)
+        ).encryptor()
+        self._encryptor.authenticate_additional_data(AAD_BLOB)
+        descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        self._handle = os.fdopen(descriptor, "w+b", closefd=True)
+        try:
+            self._handle.write(
+                _pack_header(
+                    keys,
+                    0,
+                    0,
+                    file_key=self._file_key,
+                    nonce_wrap=self._nonce_wrap,
+                    nonce_payload=self._nonce_payload,
+                )
+            )
+        except BaseException:
+            self._handle.close()
+            destination.unlink(missing_ok=True)
+            raise
+        self._finished = False
+
+    def write(self, plaintext: bytes) -> None:
+        if self._finished:
+            raise DocVaultError("BLOB_INVALID", detail="The stream has already been finalized.")
+        if self.length + len(plaintext) > self.max_plaintext_len:
+            raise DocVaultError(
+                "PAYLOAD_TOO_LARGE",
+                detail=f"The upload exceeds the {self.max_plaintext_len}-byte limit.",
+            )
+        self.length += len(plaintext)
+        self._mac.update(plaintext)
+        self._handle.write(self._encryptor.update(plaintext))
+
+    def finish(self) -> tuple[str, int]:
+        if self._finished:
+            raise DocVaultError("BLOB_INVALID", detail="The stream has already been finalized.")
+        try:
+            padded_len = padded_length(self.length, self.pad_to)
+            if padded_len > self.length:
+                self._handle.write(self._encryptor.update(b"\x00" * (padded_len - self.length)))
+            self._encryptor.finalize()
+            self._handle.write(self._encryptor.tag)
+            self._handle.seek(0)
+            self._handle.write(
+                _pack_header(
+                    self.keys,
+                    self.length,
+                    self.pad_to,
+                    file_key=self._file_key,
+                    nonce_wrap=self._nonce_wrap,
+                    nonce_payload=self._nonce_payload,
+                )
+            )
+            self._handle.flush()
+            os.fsync(self._handle.fileno())
+            self._handle.close()
+            self._finished = True
+        except BaseException:
+            self.abort()
+            raise
+        return self._mac.hexdigest(), self.length
+
+    def abort(self) -> None:
+        if not self._handle.closed:
+            self._handle.close()
+        self.destination.unlink(missing_ok=True)
+        self._finished = True
+
+
+def write_blob_stream(
+    source: BinaryIO,
+    destination: Path,
+    *,
+    max_plaintext_len: int,
+    keys: VaultKeys,
+    salt: bytes | None = None,
+    pad_to: int = DEFAULT_PAD_TO,
+) -> tuple[str, int]:
+    """Encrypt an unknown-length input stream without writing plaintext to disk."""
+    writer = BlobStreamWriter(
+        destination,
+        max_plaintext_len=max_plaintext_len,
+        keys=keys,
+        salt=salt,
+        pad_to=pad_to,
+    )
+    try:
+        while chunk := source.read(CHUNK_SIZE):
+            writer.write(chunk)
+        return writer.finish()
+    except BaseException:
+        writer.abort()
+        raise
 
 
 def read_blob_file(path: Path) -> bytes:

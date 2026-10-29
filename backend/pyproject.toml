@@ -20,6 +20,8 @@ dependencies = [
   "argon2-cffi==25.1.0",
   "uvicorn==0.54.0",
   "python-multipart==0.0.20",
+  "Pillow==12.0.0",
+  "PyMuPDF==1.26.7",
   "zxcvbn==4.5.0",
 ]
 

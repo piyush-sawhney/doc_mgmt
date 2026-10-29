@@ -16,6 +16,7 @@ from app.vault.blobs import (
     encrypt_blob,
     parse_header,
     write_blob,
+    write_blob_stream,
 )
 
 
@@ -163,4 +164,45 @@ def test_streaming_writer_rejects_long_source(keys: VaultKeys, tmp_path: Path) -
             plaintext_len=4,
             keys=keys,
         )
+    assert not destination.exists()
+
+
+def test_unknown_length_streaming_writer_round_trips(keys: VaultKeys, tmp_path: Path) -> None:
+    plaintext = b"streamed content" * 800
+    salt = b"\x07" * 16
+    destination = tmp_path / "unknown-length.part"
+
+    address, length = write_blob_stream(
+        io.BytesIO(plaintext),
+        destination,
+        max_plaintext_len=len(plaintext),
+        keys=keys,
+        salt=salt,
+        pad_to=4096,
+    )
+    opened = decrypt_blob(
+        destination.read_bytes(),
+        keys,
+        salt=salt,
+        expected_address=address,
+    )
+
+    assert length == len(plaintext)
+    assert opened.plaintext == plaintext
+
+
+def test_unknown_length_streaming_writer_removes_oversized_partial(
+    keys: VaultKeys, tmp_path: Path
+) -> None:
+    destination = tmp_path / "oversized.part"
+
+    with pytest.raises(DocVaultError) as caught:
+        write_blob_stream(
+            io.BytesIO(b"too large"),
+            destination,
+            max_plaintext_len=4,
+            keys=keys,
+        )
+
+    assert caught.value.code == "PAYLOAD_TOO_LARGE"
     assert not destination.exists()

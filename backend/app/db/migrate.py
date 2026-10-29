@@ -12,6 +12,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from alembic.util.exc import CommandError
 from sqlalchemy import Connection, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -60,6 +61,18 @@ def upgrade(dsn: str) -> None:
             "MIGRATION_FAILED",
             detail=f"Alembic upgrade failed: {exc.__class__.__name__}: {exc}",
         ) from exc
+
+
+def head_revision() -> str:
+    """Return the revision this build migrates to, without touching a database."""
+    directory = migrations_directory()
+    config = Config(str(directory.parent / "alembic.ini"))
+    config.set_main_option("script_location", str(directory))
+    config.set_main_option("path_separator", "os")
+    head = ScriptDirectory.from_config(config).get_current_head()
+    if head is None:  # pragma: no cover - a directory with no revisions
+        raise DocVaultError("MIGRATION_FAILED", detail="There is no migration head.")
+    return str(head)
 
 
 def current_revision(connection: Connection) -> str | None:

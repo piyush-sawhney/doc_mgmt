@@ -96,6 +96,12 @@ def check_bootstrap(
     connection: Connection, *, meta_key: bytes, vault_id: str
 ) -> identity.DatabaseIdentity:
     """Verify the identity of an already-provisioned database."""
+    if migrate.current_revision(connection) is None:
+        raise DocVaultError(
+            "VAULT_DB_MISMATCH",
+            detail="The database has no schema.",
+            remediation="Run docvault migrate against this vault and database.",
+        )
     return identity.require_matching_identity(
         connection,
         meta_key=meta_key,

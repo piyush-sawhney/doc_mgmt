@@ -240,7 +240,7 @@ sequenceDiagram
   W->>W: decode, apply recipe, place into cells
   W-->>A: PDF stream
   A->>DB: mark job complete, counts
-  A-->>U: stream with one-time ticket, no-store
+  A-->>U: PDF stream with X-Print-Job-ID, no-store
   U->>U: browser print dialog
 ```
 
@@ -295,7 +295,7 @@ used, but a recipe change afterwards means the paper will not be identical (`10`
 
 | Limit | Value | Error |
 |---|---|---|
-| Items per job | 200 | `422` |
+| Items per job | 100 | `422` |
 | Pages per job | 500 | `422` |
 | Generation time | 120 s | `504`, job marked failed |
 | Worker memory | 512 MB | `507`, job marked failed |
@@ -307,7 +307,7 @@ used, but a recipe change afterwards means the paper will not be identical (`10`
 | Unsupported format in a version | `415` naming the document | Audit event, job failed |
 | Corrupt source blob | `422` naming the document; other items are not printed | Audit event, job failed |
 | Worker timeout | `504` with the page count reached | Audit event, job failed |
-| Stream interrupted | Browser cannot open the PDF | Job marked `interrupted` on the next reconciliation |
+| Stream interrupted | Browser cannot open the PDF | The job remains `completed` because generation finished before the response began; the user may print again |
 | Permission revoked mid-job | Job completes for what was authorised at start | Documented: authorisation is checked once, at creation |
 
 A failed job never prints a partial packet silently. Either the whole PDF arrives or the user sees
@@ -315,7 +315,7 @@ an error.
 
 ## 12. Audit and the honest limits of `print`
 
-Every job writes one `print.request` event:
+Every completed or failed job writes one terminal `print_job.create` event:
 
 | Field | Content |
 |---|---|
@@ -325,7 +325,7 @@ Every job writes one `print.request` event:
 | Layout | Cells, duplex, paper, margins |
 | Counts | Pages, sides, sheets |
 | Recipe hashes | One SHA-256 per item, over the recipe used |
-| Outcome | `completed`, `denied`, `failed` |
+| Outcome | `completed` or `error`; `detail.status` is `completed` or `failed` |
 
 Titles, filenames, and content are **not** recorded. IDs and counts are enough to reconstruct what
 happened, and they do not put a document's name into the audit file, which is a documented

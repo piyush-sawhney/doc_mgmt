@@ -25,30 +25,32 @@ cannot meet a contract yet, it is listed in §6 with its resolution.
 the component row in §4, and the deviation list in §6. A slice that changes bytes on disk or
 database columns also updates the contract document and adds a test.
 
-Last updated: **2026-10-28**, application version **0.1.0**.
+Last updated: **2026-10-29**, application version **0.1.0**.
 
 ## 2. Snapshot
 
 | Area | State | Evidence |
 |---|---|---|
 | Design documents | **Done** | `docs/00`–`16` plus glossary and two READMEs |
-| Backend foundation | **Partial** | Vault creation, crypto, lock, audit, health, CLI |
-| Database schema and migrations | **Done** | 24 models, Alembic revision `c02412ca4b8b`, triggers D-1–D-16, seed catalogue |
-| Database provisioning and dumps | **Not started** | `init` creates the vault and TLS only |
-| Authentication, sessions, ACL enforcement | **Not started** | No login endpoint, no permission gate |
-| Entities, documents, versions, upload/download | **Not started** | No tables and no routes |
-| Render worker and previews | **Not started** | No `app/render/` or `worker/` |
-| Print composition | **Not started** | No `app/print/` |
+| Backend foundation | **Partial** | Vault creation, crypto, audit, CLI, and live POSIX lock/unlock IPC; Windows IPC and production bootstrap proof remain |
+| Database schema and migrations | **Done** | 24 models, Alembic head `7e4c2b9a1f30`, triggers D-1–D-16, and the seeded catalogue |
+| Database provisioning and dumps | **Partial** | Provisioning, encrypted dumps, backup/restore commands, and PostgreSQL integration tests; complete CLI crash/failure proof remains |
+| Authentication, sessions, ACL enforcement | **Partial** | Login/TOTP/session/password routes, admin user/group APIs, ACL resolver, entity/document enforcement, and access audits; the full route matrix remains |
+| Entities, documents, versions, upload/download | **Partial** | Encrypted uploads/versions, purge, tags, links, doc-type CRUD, search, one-use range downloads, ACL filters, and structural PDF inspection |
+| Render worker and previews | **Partial** | Isolated Linux worker, encrypted renditions/cache, recipes, tickets, Office intake, and PDF validation; non-Linux isolation and real LibreOffice conversion remain unverified |
+| Print composition | **Partial** | In-memory PDF jobs, authorization, persistence, audit, metadata, and interrupted-job recovery; preset API and golden-layout coverage remain |
 | Frontend | **Not started** | No `frontend/`; Node and npm are not installed on this dev host |
-| Packaging and Windows install | **Not started** | No PyInstaller spec, MSI, or service unit |
-| Unit tests | **Done for current code** | **67 passed** on 2026-10-28 |
-| Integration tests | **Done for the schema slice** | **33 passed** against PostgreSQL 18.6 on 2026-10-28 |
-| Lint and type checks | **Passing** | `ruff check backend`, `mypy app` (run from `backend/`) |
+| Packaging and Windows install | **Deferred** | Packaging and production Windows installation are outside this backend slice |
+| Unit tests | **Passing for current worktree** | **161 passed** |
+| Integration tests | **Passing for current worktree** | **65 passed** against PostgreSQL 18.6 |
+| Lint and type checks | **Passing for current worktree** | `ruff check backend`, `mypy app` (run from `backend/`) |
 
-The current build is a **vertical slice of the vault and its schema, not of the product**. It can
-create a vault, protect it with a passphrase, take the single-writer lock, verify the audit chain,
-create and migrate the database, seed the document-type catalogue, and answer liveness and
-readiness. It cannot yet store a document.
+The backend API and worker paths for authentication, ACLs, entities, documents, previews, Office
+intake, and print composition are implemented and covered by the current suite. The backend is
+still a **partial product slice**: Windows production support, full CLI crash/failure drills,
+complete ACL-matrix and print-layout coverage, custom print presets, and a real LibreOffice
+conversion run remain open. The frontend and packaging are intentionally outside this backend
+completion scope.
 
 ## 3. What runs today
 
@@ -89,8 +91,20 @@ the role password and credential file for an existing vault and touches nothing 
   init --vault /absolute/path/to/var/vault --reuse-vault
 ```
 
-`init` does **not** write the first encrypted dump yet. That is the remaining part of slice S2
-([§7 S2b](#s2--provisioning-credentials-and-dumps)); until it lands, `index/db/` stays empty.
+The current implementation writes the first encrypted dump after migration and seeding.
+`docvault migrate` writes a pre-migration dump when the database revision is behind. The dump
+format and database backup/restore operations are in S2b; their CLI orchestration still needs
+end-to-end validation.
+
+After initialization, create the first administrator before opening the browser:
+
+```bash
+.venv/bin/docvault user create --config config/dev.toml \
+  --username admin --role admin
+```
+
+The command prints a temporary password, which must be changed at first sign-in. It refuses to
+run after the first account exists.
 
 ### 3.3 Inspection and unlock
 
@@ -104,26 +118,38 @@ the role password and credential file for an existing vault and touches nothing 
 
 | Command | Current behaviour |
 |---|---|
-| `status` | Reads the manifest without unlocking, reports lock state, blob and audit counts, TLS fingerprints, verifies the audit chain, and reports whether the database credential exists |
+| `status` | Reads the manifest without unlocking, reports lock state, blob and audit counts, the latest dump pointer, TLS fingerprints, verifies the audit chain, and reports whether the database credential exists |
 | `doctor` | Checks configuration, manifest, filesystem, key file, audit chain, PostgreSQL 18 client tools, TLS material, the credential file, the live server version, and — when a terminal is available for the passphrase — the database `vault_id` and schema version |
-| `unlock` | Takes the writer lock, unwraps the VMK, verifies the manifest, appends `vault.unlock.allow`, then releases the lock. It proves the passphrase; it cannot unlock a service in another process yet |
-| `migrate` | Takes the writer lock, unlocks, applies Alembic revisions, seeds the catalogue, stamps `vault_id` and `schema_version` into `settings`, and audits `database.migrate`. Safe to re-run; `--force-lock` takes over a stale lock |
-| `lock` | Prints that live unlock/lock IPC is pending and exits **1** |
-| `serve` | Opens the vault, prompts for the passphrase if locked, requires the TLS certificate pair, verifies the database identity, then runs the HTTPS API |
+| `unlock` | Sends an unlock request to a running service over the private local control socket; if no service is available, it takes the writer lock, verifies the passphrase, and releases it |
+| `migrate` | Takes the writer lock, unlocks, writes a pre-migration dump if a migration is pending, applies Alembic revisions, seeds the catalogue, stamps `vault_id` and `schema_version` into `settings`, and audits `database.migrate`. Safe to re-run; `--force-lock` takes over a stale lock |
+| `backup` | Writes an encrypted database dump and updates `LATEST` after the dump is durable |
+| `restore` | Decrypts and restores the latest or a named dump, then checks the database identity |
+| `dump-list` | Prints a dump table of contents without restoring it |
+| `user create` | Creates the first administrator account and prints a temporary password that must be changed on first sign-in |
+| `lock` | Sends a lock request to the running service; the service revokes sessions and drops its in-memory vault keys |
+| `serve` | Opens and unlocks the vault, requires the TLS certificate pair, verifies the database identity, recovers interrupted print jobs, starts local control IPC, then runs the HTTPS API |
 
 `serve` refuses to start without TLS on purpose. A plaintext listener is never a supported mode.
 It also refuses to start against a database belonging to another vault or a newer schema.
 
 ### 3.4 API
 
-Only two routes exist:
-
 | Route | Behaviour |
 |---|---|
 | `GET /healthz` | Always `200 {"status":"ok"}` while the process is alive |
 | `GET /readyz` | `200` only when the vault is open and unlocked; otherwise a `503` RFC 9457 problem document |
+| `/api/v1/auth/*` | Login, TOTP, logout, session, password, and CSRF-protected account actions |
+| `/api/v1/users/*`, `/api/v1/groups/*` | Administrator-only account and group management |
+| `/api/v1/documents/{id}/acl`, `/api/v1/entities/{id}/acl` | ACL management; entity ACL changes are admin-only |
+| `/api/v1/entities/*`, `/api/v1/identifiers/*` | ACL-checked entity/person/identifier routes; identifier values are masked except for audited reveal |
+| `/api/v1/doc-types`, `/api/v1/tags` | Authenticated taxonomy reads and admin doc-type CRUD; tag CRUD |
+| `/api/v1/documents` | Encrypted PDF/JPEG/PNG and Office uploads, versioning, metadata, tags, entity links, bounded title search, and ACL-filtered collections |
+| `/api/v1/documents/{id}/*`, `/api/v1/downloads/{ticket}` | ACL-filtered reads, soft delete/restore/purge, one-use range-capable download tickets, render settings, and rendition tickets |
+| `/api/v1/print-jobs/*` | ACL-checked in-memory PDF composition and job metadata; terminal outcomes are audited |
 
-Everything else in [07](07-api.md) is design, not code.
+PDFs are structurally inspected in the isolated worker in addition to the upload-time active-content
+screen. Office archive validation rejects malformed packages and external relationships; actual
+conversion requires a configured LibreOffice executable.
 
 ### 3.5 Checks
 
@@ -163,7 +189,7 @@ and SQLite is never used ([14 §8](14-development.md)).
 |---|---|---|---|
 | `app/crypto/canonical.py` | [03 §3](03-vault-format.md) | **Done** | Sorted, compact UTF-8 JSON; base64url helpers |
 | `app/crypto/keys.py` | [05 §2–6](05-crypto.md), [03 §4–6](03-vault-format.md) | **Partial** | HKDF sub-keys, Argon2id VMK wrap, AES-256-GCM, column encryption, blind indexes, blob addresses. `rotate-passphrase` and `rotate-vmk` are not built |
-| `app/vault/blobs.py` | [03 §5](03-vault-format.md) | **Partial** | DVC1 memory and streaming writer, authenticated reader, header parsing, padding. No `verify` or `salvage` command yet |
+| `app/vault/blobs.py` | [03 §5](03-vault-format.md) | **Partial** | DVC1 memory, declared-length, and incremental unknown-length writers; authenticated reader, header parsing, and padding. No `verify` or `salvage` command yet |
 | `app/crypto/passphrase.py` | [05 §8](05-crypto.md) | **Done** | Minimum length, local common-phrase list, `zxcvbn` score ≥ 3 |
 
 ### 4.3 Vault
@@ -174,7 +200,8 @@ and SQLite is never used ([14 §8](14-development.md)).
 | `app/vault/manifest.py` | [03 §3](03-vault-format.md) | **Partial** | Build, sign, verify, load, schema-version bump, unknown-field preservation. No operator-facing edit command |
 | `app/vault/audit.py` | [03 §10](03-vault-format.md) | **Partial** | Monthly JSONL append and full-chain verification. No anchor file generation and no database mirror |
 | `app/vault/lock.py` | [03 §11](03-vault-format.md) | **Done** | Exclusive create, 5-second heartbeat, 30-second staleness, audited forced takeover |
-| `app/vault/init.py` | [09 §1](09-flows.md) | **Partial** | Vault identity and key wrapping only; TLS and database bootstrap are orchestrated by the CLI. The first dump is absent |
+| `app/vault/init.py` | [09 §1](09-flows.md) | **Partial** | Vault identity and key wrapping only; TLS and database bootstrap are orchestrated by the CLI |
+| `app/vault/dump.py` | [03 §9](03-vault-format.md) | **Partial** | DVD1 chunked authenticated encryption/decryption; integrated with backup operations |
 | `app/vault/session.py` | [09 §1](09-flows.md), [05 §9](05-crypto.md) | **Partial** | Open, unlock, in-memory lock, close, status, unlock back-off. No automatic unlock, no idle lock, no live IPC |
 | `app/vault/inspect.py` | [08 §1](08-ops.md) | **Done** | Read-only manifest, lock, blob, audit, dump-pointer, and TLS inspection |
 
@@ -183,11 +210,14 @@ and SQLite is never used ([14 §8](14-development.md)).
 | Module | Design reference | State | Notes |
 |---|---|---|---|
 | `app/api/health.py` | [07 §1](07-api.md) | **Done** | `/healthz` and `/readyz` |
-| `app/main.py` | [02 §8](02-architecture.md) | **Partial** | App factory and lifespan; only the health router is mounted |
-| `app/cli.py` | [08 §1](08-ops.md) | **Partial** | `init`, `status`, `doctor`, `unlock`, `lock`, `migrate`, `serve`. Backup, restore, verify, rotate, salvage, and user commands are absent |
-| `app/services/` | [06](06-rbac-acl.md) | **Not started** | The single permission gate does not exist yet |
-| `app/render/`, `app/print/`, `app/jobs/` | [11](11-frontend.md), [12](12-printing.md), [08 §1](08-ops.md) | **Not started** | — |
-| `worker/` | [02 §8](02-architecture.md) | **Not started** | The package name is reserved in `pyproject.toml`; no entry point exists |
+| `app/main.py` | [02 §8](02-architecture.md) | **Done for the implemented backend** | App factory mounts API routers and recovers interrupted print jobs at startup |
+| `app/cli.py` | [08 §1](08-ops.md) | **Partial** | `init`, `status`, `doctor`, live `unlock`/`lock`, `migrate`, `serve`, backup/restore/list, and `user create`; verify, rotate, salvage, Windows IPC, and full CLI failure drills remain |
+| `app/api/entities.py`, `app/services/entities.py` | [07 §4](07-api.md), [06](06-rbac-acl.md) | **Partial** | Encrypted entity/person/identifier CRUD, blind indexes, duplicate-identifier transaction locks, ETags, masked identifiers, and ACL-gated routes |
+| `app/api/documents.py` | [07 §5](07-api.md) | **Partial** | Doc-type CRUD, tags/links/search, encrypted uploads/versions, purge, range downloads, and Office conversion; full route ACL matrix and real converter proof remain |
+| `app/api/render.py`, `app/render/` | [11](11-frontend.md), [10 ADR-036/038](10-decisions.md) | **Partial** | Encrypted rendition cache, render settings, one-use tickets, isolated PDF/image rendering, and Office conversion; isolation is Linux-only |
+| `app/api/printing.py`, `worker/printing.py` | [12](12-printing.md) | **Partial** | In-memory composition, page ranges, authorization, job persistence/audit, saved recipes, and startup recovery; presets and exhaustive golden-layout tests remain |
+| `app/services/` | [06](06-rbac-acl.md) | **Partial** | Auth, account administration, transactional audit, ACL scope resolution, SQL-filtered lists, owner floor, and access logging; complete route-level ACL matrix remains |
+| `worker/` | [02 §8](02-architecture.md) | **Partial** | Pipe worker for structural PDF inspection, rendering, Office conversion, and printing; sandboxed with bubblewrap on Linux only |
 | `frontend/` | [11](11-frontend.md) | **Not started** | Node and npm are absent on this development host |
 
 ### 4.5 Database
@@ -197,26 +227,28 @@ and SQLite is never used ([14 §8](14-development.md)).
 | `app/db/base.py` | [04 §1](04-data-model.md) | **Done** | Declarative base, naming convention, `citext`/enum helpers, shared regex constants |
 | `app/db/enums.py` | [04 §3–7](04-data-model.md) | **Done** | Native PostgreSQL enums and the six capability bits (`print = 32`) |
 | `app/db/models/` | [04](04-data-model.md) | **Done** | All 24 tables, constraints, partial indexes, deferred FK for `current_version_id` |
-| `migrations/` | [04 §12](04-data-model.md), [14 §7](14-development.md) | **Done** | Alembic scaffold, DSN from `-x dsn=`/`DOCVAULT_DSN`, revision `c02412ca4b8b`, triggers D-1–D-16, clean downgrade |
+| `migrations/` | [04 §12](04-data-model.md), [14 §7](14-development.md) | **Done** | Alembic head `7e4c2b9a1f30`, render-ticket cache fields, triggers D-1–D-16, clean downgrade |
 | `app/db/seed.py` | [13 §4](13-classification.md) | **Done** | 8 categories, 73 types, encrypted names, `side` hints, idempotent, refuses a reparented code with `SEED_CONFLICT` |
 | `app/db/connect.py` | [08 §2.2](08-ops.md) | **Done** | App engine with the stored password injected at the process boundary, 5-second connect timeout, server-major check |
 | `app/db/provision.py` | [08 §2.2](08-ops.md) | **Done** | Idempotent `docvault_app` role and database creation or adoption over the admin connection; validated identifiers |
 | `app/db/credentials.py` | [08 §2.2](08-ops.md) | **Partial** | Machine-scope DPAPI on Windows (written, unexecuted); `0600` file beside the config on Linux; production refused on non-Windows. Keyring is not wired |
 | `app/db/identity.py` | [05 §9](05-crypto.md), [08 §2.2](08-ops.md) | **Done** | Encrypted `vault_id` and `schema_version` rows, mismatch and newer-schema refusals |
 | `app/db/migrate.py` | [14 §7](14-development.md) | **Done** | Alembic programmatic upgrade, revision probe, `DOCVAULT_MIGRATIONS` override, failures mapped to `MIGRATION_FAILED` |
-| `app/db/bootstrap.py` | [09 §1](09-flows.md) | **Partial** | Migrate, seed, stamp, and identity check wired to `init`, `migrate`, `doctor`, and `serve`. No dump step |
+| `app/db/bootstrap.py` | [09 §1](09-flows.md) | **Partial** | Migrate, seed, stamp, identity checks, first dump, and pre-migration dump hooks are wired; full CLI failure-injection remains |
+| `app/db/backup.py` | [08 §3–4](08-ops.md) | **Partial** | Encrypted backup/restore, listing, `LATEST`, and retention have PostgreSQL integration coverage; CLI-level crash drills remain |
 | `app/db/schema.py` | [04 §12](04-data-model.md) | **Done** | One source for the schema version and the initial revision |
-| Repositories and query layer | [04](04-data-model.md) | **Not started** | The schema is the contract; no query code exists yet |
+| Repositories and query layer | [04](04-data-model.md) | **Partial** | API routers use SQLAlchemy queries directly; a separate repository layer and load testing are not implemented |
 | `docvault migrate` wiring | [08 §2](08-ops.md) | **Done** | Applies revisions, seeds, stamps the identity, audits `database.migrate`, and supports `--force-lock` |
 
 ## 5. Test evidence
 
-### 5.1 Unit suite — 75 passed
+### 5.1 Unit suite — 161 passed
 
 | File | What it proves |
 |---|---|
 | `test_crypto_keys.py` | Sub-key separation, a locked fingerprint vector, DVK1 round trip, wrong passphrase, tampered tag, absurd Argon2 cost, column AAD binding, blind-index normalisation, salt-scoped addresses |
-| `test_blobs.py` | DVC1 header and padding, empty plaintext, tampering, wrong key, address mismatch, unknown flags and magic, streaming writer addresses, short and long sources |
+| `test_blobs.py` | DVC1 header and padding, empty plaintext, tampering, wrong key, address mismatch, unknown flags and magic, declared/unknown-length streaming writers, size limits, short and long sources |
+| `test_document_upload.py` | Multipart metadata ordering, magic-byte MIME checks, active-PDF keyword rejection, encrypted streaming (no plaintext `.part`), and oversized upload cleanup |
 | `test_manifest.py` | Canonical JSON, signing, unknown-field preservation, tamper detection, fan-out rejection, wrong fingerprint, readable bytes round trip |
 | `test_audit.py` | Zero hash, cross-month chaining, middle-entry tampering, the documented newest-line truncation limit, and refusal to append after a partial line |
 | `test_lock.py` | Second writer refused, release, heartbeat record, stale detection, forced takeover, forced-takeover audit |
@@ -225,11 +257,17 @@ and SQLite is never used ([14 §8](14-development.md)).
 | `test_init.py` | Vault identity, second-init refusal, weak passphrase refusal, unlock, wrong-passphrase audit, status without unlock, lock release |
 | `test_credentials.py` | Credential path beside the config, `0600` round trip, missing and damaged files reported as `DB_CREDENTIAL_UNREADABLE`, production refused on non-Windows |
 | `test_http.py` | `/healthz`, locked `/readyz`, ready `/readyz`, request-ID echo, problem documents, unknown route |
+| `test_dump.py` | DVD1 header and chunk boundaries, authentication, tampering, truncation, wrong key, and no partial plaintext |
+| `test_backup.py` | `LATEST` parsing, safe names, sortable timestamps, and dump retention |
+| `test_acl.py` | Allow and deny closure for the six capability bits |
+| `test_auth.py` | Username normalization, password rules, login throttle, and TOTP primitives |
+| `test_control.py` | Private POSIX control socket, lock/unlock/status handling, and socket cleanup |
+| `test_render_worker.py` | Isolated worker protocol, hostile Office archives, PDF inspection, rendition rendering, and print layout composition |
 
 The unit suite is deliberately at the crypto and filesystem boundary. It proves the contracts
 that are cheapest to get wrong, not that the product works end to end.
 
-### 5.2 Integration suite — 39 passed
+### 5.2 Integration suite — 65 passed
 
 Every test creates a fresh database on the PostgreSQL 18.6 throwaway cluster, runs the Alembic
 migration, and drops the database. The fixture skips, rather than falls back to SQLite, when the
@@ -240,8 +278,18 @@ cluster is absent.
 | `test_schema.py` | All 24 tables exist; downgrade empties the schema and upgrade restores it; native enums; capability masks (`print` requires `read`, mask ≤ 63); ACL trigger rejects deleted objects and unknown subjects; two-level `doc_types`; `version_count`; `current_version_id` ownership; version immutability; append-only audit (`UPDATE`/`DELETE`/`TRUNCATE`); legal-hold and delete-before-purge guards; deferred `self`-link rule; `updated_at` trigger; `settings` value/`value_enc` exclusivity; partial indexes |
 | `test_seed.py` | 8 categories and 73 types; every type has a category; idempotent second run; renamed type survives; names are encrypted; front/back `side` hints; defaults match [13 §4](13-classification.md); a reparented code raises `SEED_CONFLICT` |
 | `test_bootstrap.py` | Provisioning creates an unprivileged role that owns its database; a second run adopts the pair; the app role cannot `CREATE DATABASE` (SQLSTATE `42501`); migration is idempotent and reports the head; bootstrap seeds, stamps `vault_id` and `schema_version`, refuses a stranger's vault ID, and does not restamp on a second run; the server check accepts PostgreSQL 18 |
+| `test_backup.py` | Encrypted `pg_dump`, restore into an empty database, dump TOC listing, vault-identity refusal, corruption/tampering detection, missing dumps, rotation, and `LATEST` durability on failure |
+| `test_auth.py` | Login, session cookies, CSRF, password changes, lockout, and TOTP |
+| `test_admin.py` | User/group lifecycle, ETags, last-admin protection, forced password change, and document-type CRUD/tree constraints |
+| `test_acl.py` | Entity-scope union/deny behavior, filtered listing, owner floor, and durable denial audit |
+| `test_entities.py` | Encrypted entity and identifier fields, identifier masking, duplicate-ID rejection, and the mandatory individual self-link |
+| `test_documents.py` | Entity API ETags/masking, ACL-checked linked upload, encrypted blob persistence, idempotency replay, audited download, render cache, print jobs, and interrupted-job recovery |
 
-### 5.3 Manually verified on 2026-10-28
+The full suite, including auth, administration, ACL, entity, document upload/download, rendering,
+print composition, bootstrap, and encrypted backup/restore tests, passed: **226 passed** against
+PostgreSQL 18.6 on 2026-10-29. Ruff lint/format and strict mypy checks also pass.
+
+### 5.3 S2a manually verified before the S2b worktree changes on 2026-10-28
 
 A fresh development vault was created under `/tmp`, against the 5433 cluster, then inspected:
 
@@ -268,15 +316,20 @@ base, and upgrade again; `alembic check` reports **No new upgrade operations det
 
 | Gap | Consequence |
 |---|---|
-| Windows filesystem and path handling | The production target is unexercised |
+| Full ACL matrix across entity/document CRUD, including all group/deny combinations | Core allow/deny paths and a linked upload are tested; the full permission matrix remains |
+| Full CLI `init`/`migrate` dump hooks and initial `user create` failure paths | Backup components pass PostgreSQL integration tests, but the complete CLI flow has not been fault-injected end to end |
+| Windows filesystem, path handling, and lock/unlock IPC | The production target is unexercised; local control IPC is POSIX Unix-socket only |
 | DPAPI credential sealing | The ctypes call is written and reviewed, never executed; the Linux file path is what the tests cover |
 | `serve` against a mismatched database | The identity check is exercised through `doctor` and the integration tests, not by starting the HTTPS listener |
 | Concurrent processes and heartbeat failure | Stale-lock takeover is tested by writing a file, not by killing a live writer |
-| Large streamed uploads and disk-full behaviour | The streaming writer is tested with 9 KB, not a 100 MB document |
+| Large streamed uploads and disk-full behaviour | Streaming is tested with small payloads and an enforced size cap, not a 100 MB document or disk-full fault |
+| Hostile-input corpus and compressed PDF active-content coverage | Structural inspection runs in the isolated worker, but the hostile-input corpus is not comprehensive |
+| Rendition cleanup failures and orphaned ciphertext after filesystem errors | Database/cache behavior and ordinary eviction are tested; disk-full and unlink fault injection remain |
+| Print presets and exhaustive golden-page comparisons | Composition is implemented and layout behavior has focused tests; preset management and full grid/paper golden hashes remain |
 | Crash injection during `init`, blob write, or dump | Cleanup paths are reasoned about, not fault-injected |
 | TLS handshake with a real client | Certificates are generated and fingerprinted, not used by a browser |
-| Query behaviour under load | The schema is tested; there are no queries, repositories, or volume tests yet |
-| Frontend | No code |
+| Query behaviour under load | Functional database paths are covered; there are no volume or performance tests |
+| Frontend | No code; excluded from the backend completion scope |
 
 ## 6. Deviations and open gaps
 
@@ -285,20 +338,20 @@ allowed only while this table says so; a gap without a slice is a defect.
 
 | ID | Design expects | Current build | Resolution |
 |---|---|---|---|
-| IMP-01 | `docvault init` provisions the role, database, schema, seed catalogue, and first dump ([08 §2](08-ops.md), [09 §1](09-flows.md)) | Creates the vault, TLS, role, database, credential, schema, and seed. The first encrypted dump is not written | **S2b** |
-| IMP-02 | A running service can be unlocked and locked through IPC ([08 §7](08-ops.md)) | `unlock` proves the passphrase in a short-lived process; `lock` exits **1** with a pending-IPC message | **S3** |
-| IMP-03 | Automatic unlock uses DPAPI/keyring when opted in ([15 §6.3](15-production-setup.md)) | `vault.auto_unlock` is parsed, but `serve` refuses with `CONFIG_INVALID`; the database credential uses DPAPI, the vault key does not | **S3/S8** |
-| IMP-04 | Schema, Alembic migrations, seeded document types, constraints, triggers, and indexes ([04](04-data-model.md)) | All 24 tables and the seed catalogue exist, with revision `c02412ca4b8b` and 33 schema/seed integration tests (39 today) against PostgreSQL 18 | **Closed 2026-10-28 (S1)** |
-| IMP-05 | Encrypted `DVD1` dumps, `LATEST`, backup, restore, and pre-migration dumps ([03 §9](03-vault-format.md), [08 §3–4](08-ops.md)) | No dump format implementation and no commands | **S2b** |
-| IMP-06 | Database credential stored in DPAPI or the OS keyring, never in TOML ([02 §6.3](02-architecture.md)) | Machine-scope DPAPI on Windows (written, unexecuted); `0600` file beside the config on Linux development; keyring not wired | **Closed for v1 Linux development 2026-10-28 (S2a); keyring is S8** |
-| IMP-07 | `doctor` checks the live database and its version ([08 §1](08-ops.md)) | Checks the credential, server major, identity, and schema when a terminal supplies the passphrase | **Closed 2026-10-28 (S2a)** |
-| IMP-08 | Auth, sessions, CSRF, lockout, roles, and the single ACL gate ([06](06-rbac-acl.md), [07 §2](07-api.md)) | No sessions and no permission code | **S3** |
-| IMP-09 | Entities, persons, identifiers, documents, versions, uploads, downloads, and audit database writes ([07 §4–5](07-api.md)) | No routes beyond health | **S4** |
-| IMP-10 | Office intake converts once at ingest to a derived PDF; previews are encrypted renditions ([10 ADR-038](10-decisions.md), [11](11-frontend.md)) | No render worker; `office.convert_exe` is parsed but unused | **S5** |
-| IMP-11 | Print composition produces one PDF in memory, with no stored artifact ([12](12-printing.md)) | No composer | **S6** |
-| IMP-12 | React frontend served from the same origin ([11](11-frontend.md)) | No frontend; Node and npm are missing on this machine | **S7** |
-| IMP-13 | Windows production installation, service, MSI, and filesystem behaviour ([15](15-production-setup.md)) | Only Linux development paths have been executed | **S8** |
-| IMP-14 | Python `3.14.10` ([02 §6.1](02-architecture.md)) | Local interpreter is `3.14.4`; no feature depends on the patch level, but release builds must use the pin | **S8** |
+| IMP-01 | `docvault init` provisions the role, database, schema, seed catalogue, and first dump ([08 §2](08-ops.md), [09 §1](09-flows.md)) | Provisioning and dump hooks are wired and integration-tested; full CLI failure injection remains | **Partial; needs CLI fault drills** |
+| IMP-02 | A running service can be unlocked and locked through IPC ([08 §7](08-ops.md)) | Live local control uses a private POSIX Unix socket, revokes sessions on lock, and drops in-memory keys | **Done on Linux; Windows named-pipe equivalent deferred to S8** |
+| IMP-03 | Automatic unlock uses DPAPI/keyring when opted in ([15 §6.3](15-production-setup.md)) | Automatic vault-key unlock is not implemented; `serve` requires interactive unlock | **Deferred to S8** |
+| IMP-04 | Schema, Alembic migrations, seeded document types, constraints, triggers, and indexes ([04](04-data-model.md)) | All 24 tables and the seed catalogue exist at head `7e4c2b9a1f30`; downgrade and upgrade tests pass | **Closed (S1)** |
+| IMP-05 | Encrypted `DVD1` dumps, `LATEST`, backup, restore, and pre-migration dumps ([03 §9](03-vault-format.md), [08 §3–4](08-ops.md)) | Format, commands, hooks, and PostgreSQL backup/restore integration tests pass; full CLI crash drills remain | **Implemented; final CLI fault validation open** |
+| IMP-06 | Database credential stored in DPAPI or the OS keyring, never in TOML ([02 §6.3](02-architecture.md)) | Linux development uses a `0600` credential file; DPAPI is written but unexecuted and keyring is not wired | **Deferred to S8 production proof** |
+| IMP-07 | `doctor` checks the live database and its version ([08 §1](08-ops.md)) | Credential, server major, identity, and schema checks are covered | **Closed (S2a)** |
+| IMP-08 | Auth, sessions, CSRF, lockout, roles, and the single ACL gate ([06](06-rbac-acl.md), [07 §2](07-api.md)) | Routes use ACL gates and durable access audits; principal cases pass, but the complete group/deny matrix is not covered | **Partial; remaining route-matrix tests** |
+| IMP-09 | Entities, persons, identifiers, documents, versions, uploads, downloads, and audit writes ([07 §4–5](07-api.md)) | CRUD, doc types, tags/links/search, encrypted uploads/versions, purge, range downloads, and structural PDF inspection are implemented | **Implemented; ACL matrix and hostile-input corpus remain** |
+| IMP-10 | Office intake converts once at ingest; previews are encrypted renditions ([10 ADR-038](10-decisions.md), [11](11-frontend.md)) | Linux-isolated worker, encrypted previews/cache, and converter wiring are implemented; actual LibreOffice execution and non-Linux sandbox remain unverified | **Partial; platform/converter validation** |
+| IMP-11 | Print composition produces one PDF in memory, with no stored artifact ([12](12-printing.md)) | Composition, job records, terminal audit, crash recovery, and print authorization are implemented | **Partial; preset API and exhaustive golden-layout tests** |
+| IMP-12 | React frontend served from the same origin ([11](11-frontend.md)) | No frontend | **Deferred; outside backend scope** |
+| IMP-13 | Windows production installation, service, MSI, and filesystem behaviour ([15](15-production-setup.md)) | Only Linux development paths have been executed | **Deferred; outside backend scope** |
+| IMP-14 | Python `3.14.10` ([02 §6.1](02-architecture.md)) | Local interpreter is `3.14.4`; no feature depends on the patch level | **Deferred to release build** |
 | IMP-15 | `doctor` is a read-only inspection | Its filesystem probe writes short-lived probe files under `tmp/`. It never creates missing vault folders or modifies content, but the filesystem must be writable | Documented behaviour; no action unless a read-only doctor is required |
 | IMP-16 | The design is the base for code | `backend/app/crypto/blobs.py` was moved to `backend/app/vault/blobs.py` to match the layout in [02 §8](02-architecture.md) | Closed 2026-10-28 |
 
@@ -331,10 +384,11 @@ temporary database on the throwaway cluster.
 **Exit criteria:** migration upgrades an empty database and downgrades cleanly; constraints reject
 bad rows; the seed is idempotent; integration tests run against real PostgreSQL, never SQLite.
 
-**Delivered:** 24 models under `app/db/models/`; revision `c02412ca4b8b` with triggers D-1–D-16 and
-an explicit enum teardown on downgrade; `app/db/seed.py` with 8 categories and 73 types; 33
-integration tests; `alembic check` clean. Contract documents updated for `print = 32`, `gender`
-values, `settings.value`, `row_version`, D-4/D-6/D-10, and the version immutability list.
+**Delivered:** 24 models under `app/db/models/`; initial revision `c02412ca4b8b` with triggers
+D-1–D-16 and an explicit enum teardown on downgrade; `app/db/seed.py` with 8 categories and 73
+types; follow-up revision `7e4c2b9a1f30` adds render-ticket cache fields. Contract documents
+updated for `print = 32`, `gender` values, `settings.value`, `row_version`, D-4/D-6/D-10, and the
+version immutability list.
 
 ### S2 — Provisioning, credentials, and dumps
 
@@ -356,7 +410,7 @@ credential, live server, identity, and schema; `serve` refuses a mismatched data
 `MIGRATION_FAILED` was added to the error catalog. 6 integration tests and 8 credential unit
 tests; the suite is 75 unit + 39 integration. Verified end to end against the 5433 cluster.
 
-#### S2b — Encrypted dumps — **next**
+#### S2b — Encrypted dumps — **implemented; CLI fault validation remains**
 
 **Build:** the `DVD1` chunked container and its `LATEST` pointer ([03 §9](03-vault-format.md)),
 `docvault backup`, `docvault restore`, and `docvault dump-list` ([08 §3–4](08-ops.md)), the first
@@ -367,7 +421,12 @@ last-dump line in `status`.
 is refused; a wrong passphrase or wrong vault ID refuses; `LATEST` only moves after the dump is
 durable.
 
-### S3 — Authentication, sessions, and the permission gate
+**Present in the current worktree:** the DVD1 format, `LATEST` pointer, `backup`,
+`restore`, and `dump-list`; initial and pre-migration dump hooks; latest-dump reporting in `status`;
+unit and PostgreSQL integration tests. The full suite passes 226 tests, with Ruff and mypy clean.
+Full CLI crash/failure injection remains before S2b can be marked done.
+
+### S3 — Authentication, sessions, and the permission gate — **in progress**
 
 **Build:** login, logout, session cookie, CSRF, lockout, password change, user administration, and
 one ACL resolver implementing [06 §5](06-rbac-acl.md). Add audit database writes in the same
@@ -376,7 +435,16 @@ transaction as the change. Add live unlock/lock IPC or a documented single-proce
 **Exit criteria:** the [06 §10](06-rbac-acl.md) matrix passes; unauthorised requests return `404`
 rather than `403` where the design requires it; every allow and deny is audited.
 
-### S4 — Entities, documents, and versions
+**Present in the current worktree:** login/logout, session and CSRF validation, temporary-password
+enforcement, password changes, TOTP enrollment/verification/disable, process-local login throttling,
+admin user/group routes, database audit writes, capability closure, document/entity ACL replacement,
+document owner floor, restricted-print checks, and SQL-filtered document visibility. Access denials
+are committed independently so a rejected request cannot roll back its audit record. PostgreSQL
+integration tests cover the principal resolver, owner-floor, and audit cases. Entity and document
+resource routes use the gate, and private POSIX IPC provides live lock/unlock with session revocation.
+The complete route-level ACL matrix and Windows named-pipe equivalent remain open.
+
+### S4 — Entities, documents, and versions — **in progress**
 
 **Build:** entity and person CRUD, identifier blind indexes, document create/update/soft-delete,
 version upload and download, blob write and read through `vault/blobs.py`, MIME sniffing, format
@@ -385,23 +453,40 @@ rejection (including TIFF), size limits, and idempotent retries.
 **Exit criteria:** [09 §3–5](09-flows.md) and [09 §9–10](09-flows.md) work end to end; a document
 is unreadable on disk; an unauthorised download fails without leaking existence.
 
-### S5 — Previews and Office intake
+**Present in the current worktree:** encrypted entity/person/identifier operations, audited
+identifier reveal, version-1 and appended encrypted uploads, doc-type CRUD, tags/links, bounded
+encrypted-title substring search, soft-delete/restore/purge, one-use user/IP-bound range downloads,
+and Office upload conversion to encrypted derived PDFs. Entity and category/date filters,
+metadata-plus-content idempotency, and structural PDF inspection in the worker are covered.
+Downloads authenticate the complete encrypted blob before selecting a range. Full ACL-matrix and
+hostile-input corpus coverage remain open.
+
+### S5 — Previews and Office intake — **implemented with platform/converter validation gaps**
 
 **Build:** the separate render worker with no vault key and no network, encrypted rendition cache,
 JPEG/PNG/PDF previews, one-time Office-to-PDF conversion at ingest, and cache eviction.
 
-**Exit criteria:** hostile-input corpus is rejected; the worker cannot open the vault; Office
-intake is refused with `415` when no converter is configured.
+**Delivered:** a pipe-based Linux bubblewrap worker with no vault mount/key or network, PDF/image
+rendering and inspection, encrypted rendition cache with eviction, render settings and one-use
+tickets, Office archive checks, and one-time conversion when a converter is configured. Without a
+converter Office uploads fail with `415`.
 
-### S6 — Print composition
+**Remaining:** execute real LibreOffice conversion and the full hostile-input corpus; implement and
+test a supported non-Linux sandbox before production deployment.
+
+### S6 — Print composition — **implemented with preset/layout coverage gaps**
 
 **Build:** the layout maths and composer from [12](12-printing.md), page ranges, grid cells, duplex,
 presets, one audit event per job, and no stored print artifact.
 
-**Exit criteria:** golden-page hashes for every grid; page count and sheet count match the design;
-a `restricted` document without an explicit `print` grant returns `403 PRINT_RESTRICTED`.
+**Delivered:** grid composition, page ranges, duplex settings, saved render recipes, per-document
+print authorization, job/item persistence, one terminal audit event, in-memory PDF response,
+metadata routes, and startup recovery of interrupted jobs.
 
-### S7 — Frontend
+**Remaining:** preset management and exhaustive golden-page comparisons for all grids/paper sizes.
+Restricted-print authorization and page/sheet counts have focused integration coverage.
+
+### S7 — Frontend — **deferred; outside backend scope**
 
 **Build:** the screens in [11](11-frontend.md) on React 19, TypeScript, Vite, and TanStack Query,
 served by FastAPI from the same origin. Implement the viewer, print queue, and accessible table
@@ -410,7 +495,7 @@ patterns before polish.
 **Exit criteria:** the [07 §10](07-api.md) contract tests exist; keyboard-only filing and printing
 work; no key material reaches the browser.
 
-### S8 — Packaging and production proof
+### S8 — Packaging and production proof — **deferred**
 
 **Build:** PyInstaller spec, Windows service, MSI, Linux unit, backup and restore drill, and the
 production certificate flow. Run the [15](15-production-setup.md) go-live checklist on real
@@ -437,3 +522,6 @@ If the product owner answers differently, the answer changes S5 and S6, not the 
 |---|---|
 | 2026-10-28 | First implementation status page. Vault slice, 67 unit tests, lint and type gates recorded. `blobs.py` moved to `vault/` to match `02` §8. Configuration key names in `08` corrected to the nested form. |
 | 2026-10-28 | S1: database foundation. 24 models, Alembic revision `c02412ca4b8b`, triggers D-1–D-16, seed catalogue (8 categories, 73 types), 33 integration tests; 100 tests total. `04` synced for `print = 32`, `gender`, `settings.value`, `row_version`, D-4/D-6/D-10/D-16, and version immutability. `08` no longer claims the seed is a migration. `14` records the integration command and `DOCVAULT_TEST_PG_DSN`. |
+| 2026-10-28 | S2b work-in-progress status: encrypted dumps and backup/restore wiring are present. The complete backend suite passes (125 unit, 59 integration); CLI `init`/`migrate` dump orchestration remains unverified. |
+| 2026-10-29 | Earlier S3/S4 checkpoint: entity and document routes were ACL-gated; version appends, request-bound idempotency, single byte-range downloads, category/date filters, and admin purge with legal-hold/retention guards were implemented. Remaining gaps at that checkpoint are closed or updated in the later entry below. |
+| 2026-10-29 | Backend completion pass: added doc-type CRUD and ETag/tree guards, live POSIX lock/unlock IPC, isolated rendering/Office intake, print composition and interrupted-job recovery. Full suite: 226 tests; Ruff and mypy pass. Windows IPC/sandboxing, custom print presets, exhaustive ACL/golden-layout tests, and CLI failure drills remain explicitly open. |

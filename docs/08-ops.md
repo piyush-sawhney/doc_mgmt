@@ -17,29 +17,24 @@ Everything an operator needs is one program.
 | `docvault init --vault <path>` | Creates a vault, sets the passphrase, generates TLS, provisions the database role, and seeds the document-type catalogue |
 | `docvault init --reuse-vault` | Re-creates the database role and credential for an existing vault, without touching `manifest.json` or `kek.wrapped` |
 | `docvault serve` | Runs the backend. This is what the OS service calls. |
-| `docvault unlock` | Unlocks a vault that started locked. Prompts for the passphrase; it stays in memory until restart. |
-| `docvault lock` | Drops the vault key from memory without stopping the service. |
-| `docvault auto-unlock enable \| disable` | Chooses whether the service unlocks at boot. Automatic mode seals the passphrase with DPAPI machine scope; see `15` §6.3. |
+| `docvault unlock` | Sends an unlock request to a running service; otherwise verifies the passphrase in the CLI process. |
+| `docvault lock` | Asks a running service to revoke sessions and drop its in-memory vault keys. |
 | `docvault status` | Shows vault, database, lock, key fingerprint, last dump and whether it is encrypted, and blob count |
 | `docvault doctor` | Checks the environment: filesystem, permissions, ports, PostgreSQL server and client versions, `pg_bin_dir`, database credential |
 | `docvault backup [--force]` | Writes an encrypted dump into `index/db/` and updates `LATEST` |
 | `docvault dump-list [--dump <file>]` | Prints the table of contents of an encrypted dump without restoring it |
 | `docvault restore --vault <path> [--dump <file>]` | Attaches a vault on this machine, decrypts the dump, and restores the database |
-| `docvault verify [--deep] [--limit N]` | Checks blobs, addresses, orphans, dumps, and the audit chain |
-| `docvault renditions [--clear] [--status]` | Shows or clears the encrypted preview cache. Always safe. |
-| `docvault salvage --vault <path> --out <dir>` | Decrypts blobs without a database |
 | `docvault migrate` | Applies schema migrations, after writing a dump. Also re-applies the seeded type catalogue if a category or type is missing. |
-| `docvault rotate-passphrase` | Re-wraps the vault key under a new passphrase |
-| `docvault rotate-vmk` | **Destructive and slow.** Replaces the vault key and re-encrypts everything, dumps included. |
-| `docvault user create \| reset \| disable \| list` | User administration from the console |
+| `docvault user create` | Creates the first administrator and prints a temporary password |
 
 The first installation is a separate, ordered walkthrough in `15`. This page is the reference you
 keep afterwards.
 
-The current build implements `init` (with `--admin-dsn`, `--no-database`, and `--reuse-vault`),
-`serve`, `unlock`, `lock`, `status`, `doctor`, and `migrate [--force-lock]`. The remaining
-commands are specified here and tracked in [17 §6](17-implementation.md); `migrate` does not write
-a pre-migration dump yet.
+The implemented command set is listed above. `init` writes the initial encrypted database dump,
+and `migrate` writes a pre-migration dump when needed. On Linux, live lock/unlock control uses a
+private Unix-domain socket; Windows named-pipe support and automatic vault-key unlock are not
+implemented. Verification, rotation, salvage, and rendition-cache management commands remain
+tracked as open work in [17 §6](17-implementation.md).
 
 ## 2. Installing
 

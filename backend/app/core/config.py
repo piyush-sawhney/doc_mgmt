@@ -102,6 +102,13 @@ class DatabaseSettings(BaseModel):
         return self
 
 
+class BackupSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # Ordinary dumps kept on rotation. Pre-migration dumps are never removed.
+    keep: int = Field(default=7, ge=1, le=365)
+
+
 class LimitSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -142,6 +149,7 @@ class Settings(BaseModel):
     server: ServerSettings = Field(default_factory=ServerSettings)
     vault: VaultSettings = Field(default_factory=VaultSettings)
     database: DatabaseSettings
+    backup: BackupSettings = Field(default_factory=BackupSettings)
     limits: LimitSettings = Field(default_factory=LimitSettings)
     render: RenderSettings = Field(default_factory=RenderSettings)
     office: OfficeSettings = Field(default_factory=OfficeSettings)

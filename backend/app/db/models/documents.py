@@ -167,6 +167,8 @@ class DocumentVersion(Base):
     original_filename_enc: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     derived_pdf_addr: Mapped[str | None] = mapped_column(CHAR(64), unique=True)
     derived_pdf_salt: Mapped[bytes | None] = mapped_column(LargeBinary)
+    derived_pdf_pages: Mapped[int | None] = mapped_column(Integer)
+    derived_pdf_size: Mapped[int | None] = mapped_column(BigInteger)
     note_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
     uploaded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
@@ -190,6 +192,22 @@ class DocumentVersion(Base):
         CheckConstraint(
             "(derived_pdf_addr IS NULL) = (derived_pdf_salt IS NULL)",
             name="derived_pdf_pair",
+        ),
+        CheckConstraint(
+            "(derived_pdf_addr IS NULL) = (derived_pdf_pages IS NULL)",
+            name="derived_pdf_pages_pair",
+        ),
+        CheckConstraint(
+            "(derived_pdf_addr IS NULL) = (derived_pdf_size IS NULL)",
+            name="derived_pdf_size_pair",
+        ),
+        CheckConstraint(
+            "derived_pdf_pages IS NULL OR derived_pdf_pages > 0",
+            name="derived_pdf_pages_positive",
+        ),
+        CheckConstraint(
+            "derived_pdf_size IS NULL OR derived_pdf_size >= 0",
+            name="derived_pdf_size_non_negative",
         ),
         CheckConstraint(
             "derived_pdf_salt IS NULL OR octet_length(derived_pdf_salt) = 16",

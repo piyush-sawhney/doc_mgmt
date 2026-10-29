@@ -12,8 +12,9 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from sqlalchemy.engine import Engine
 
-from app.api import health
+from app.api import acl, admin, auth, documents, entities, health, printing, render
 from app.core.config import LoadedSettings, Settings, load_settings
 from app.core.errors import DocVaultError
 from app.core.http import register_exception_handlers, request_context_middleware
@@ -29,6 +30,7 @@ def create_app(
     *,
     loaded: LoadedSettings | None = None,
     vault: VaultManager | None = None,
+    db_engine: Engine | None = None,
     app_version: str = __version__,
 ) -> FastAPI:
     """Build the ASGI application around validated settings.
@@ -54,9 +56,14 @@ def create_app(
             app.state.vault_error = exc
             LOGGER.error("vault did not open at startup", extra={"code": exc.code})
         app.state.vault = manager
+        app.state.db_engine = db_engine
+        if manager is not None and db_engine is not None and not manager.locked:
+            printing.recover_interrupted_print_jobs(db_engine)
         try:
             yield
         finally:
+            if db_engine is not None:
+                db_engine.dispose()
             if manager is not None:
                 manager.close()
 
@@ -74,4 +81,11 @@ def create_app(
     app.middleware("http")(request_context_middleware)
     register_exception_handlers(app)
     app.include_router(health.router)
+    app.include_router(auth.router)
+    app.include_router(admin.router)
+    app.include_router(acl.router)
+    app.include_router(entities.router)
+    app.include_router(documents.router)
+    app.include_router(render.router)
+    app.include_router(printing.router)
     return app

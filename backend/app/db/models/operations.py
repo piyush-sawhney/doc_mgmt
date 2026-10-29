@@ -126,6 +126,9 @@ class DownloadTicket(Base):
     version_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("document_versions.id", ondelete="CASCADE"), nullable=False
     )
+    rendition_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("renditions.id", ondelete="CASCADE")
+    )
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
@@ -154,7 +157,14 @@ class Rendition(Base):
     )
     recipe_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
     blob_addr: Mapped[str] = mapped_column(CHAR(64), nullable=False, unique=True)
+    blob_salt: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     plaintext_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    is_saved_recipe: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    page_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    width_px: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    height_px: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

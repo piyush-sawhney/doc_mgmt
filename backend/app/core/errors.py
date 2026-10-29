@@ -247,19 +247,83 @@ ERROR_SPECS: dict[str, ErrorSpec] = {
         "The newest audit entry is missing, partial, or unreadable.",
         "Run docvault verify and restore the audit folder from a backup.",
     ),
+    # Dumps and backups (docs/03 §9, docs/08 §3-4)
+    "DUMP_NOT_FOUND": ErrorSpec(
+        "No usable dump",
+        404,
+        "The named dump, or the LATEST pointer, does not exist.",
+        "Run docvault backup, or name an existing dump with --dump.",
+    ),
+    "DUMP_INVALID": ErrorSpec(
+        "Dump is not a valid DVD1 container",
+        500,
+        "The dump header or chunk size is invalid.",
+        "Restore the previous dump; never try to salvage a partial archive.",
+    ),
+    "DUMP_TAMPERED": ErrorSpec(
+        "Dump authentication failed",
+        500,
+        "A chunk tag did not authenticate under this vault's key.",
+        "Restore the previous dump. The file was modified or belongs to another vault.",
+    ),
+    "DUMP_TRUNCATED": ErrorSpec(
+        "Dump is truncated",
+        500,
+        "The final authenticated chunk is missing.",
+        "Restore the previous dump. A partial archive is never restored.",
+    ),
+    "DUMP_MISMATCH": ErrorSpec(
+        "Dump does not match LATEST",
+        500,
+        "The file size, SHA-256, or vault ID disagrees with LATEST.",
+        "Restore the previous dump, or the file named by LATEST, not both.",
+    ),
+    "PG_DUMP_FAILED": ErrorSpec(
+        "pg_dump failed",
+        500,
+        "PostgreSQL's logical dump could not be produced.",
+        "Read the reported cause. The previous dump, and LATEST, are untouched.",
+    ),
+    "PG_RESTORE_FAILED": ErrorSpec(
+        "pg_restore failed",
+        500,
+        "The logical dump could not be restored.",
+        "Check that the target database is empty and that the role owns it.",
+    ),
     # Generic API errors
     "BAD_REQUEST": ErrorSpec("Bad request", 400, "The request could not be parsed."),
     "AUTH_REQUIRED": ErrorSpec("Authentication required", 401, "No valid session was presented."),
+    "AUTH_INVALID": ErrorSpec("Invalid credentials", 401, "The username or password is incorrect."),
+    "AUTH_LOCKED": ErrorSpec("Account unavailable", 403, "This account is disabled or locked."),
+    "SESSION_EXPIRED": ErrorSpec("Session expired", 401, "The session is expired or revoked."),
+    "PASSWORD_CHANGE_REQUIRED": ErrorSpec(
+        "Password change required",
+        403,
+        "Change the temporary password before using this endpoint.",
+    ),
+    "CSRF_INVALID": ErrorSpec("CSRF token invalid", 403, "The CSRF token is missing or invalid."),
+    "PRECONDITION_REQUIRED": ErrorSpec(
+        "Precondition required", 428, "The If-Match header is required."
+    ),
+    "PASSWORD_POLICY": ErrorSpec(
+        "Password does not meet policy",
+        422,
+        "The password is too short or too predictable.",
+        "Choose a unique password with at least 12 characters.",
+    ),
+    "RATE_LIMITED": ErrorSpec("Too many requests", 429, "Slow down and retry."),
     "METHOD_NOT_ALLOWED": ErrorSpec(
         "Method not allowed", 405, "That method is not supported here."
     ),
     "CONFLICT": ErrorSpec("Conflict", 409, "The resource changed while you were editing it."),
     "GONE": ErrorSpec("Gone", 410, "The ticket expired or was already used."),
+    "RANGE_NOT_SATISFIABLE": ErrorSpec(
+        "Range not satisfiable", 416, "The requested byte range is not available."
+    ),
     "PAYLOAD_TOO_LARGE": ErrorSpec("Payload too large", 413, "The upload exceeds the limit."),
     "UNSUPPORTED_MEDIA_TYPE": ErrorSpec(
         "Unsupported media type", 415, "That file type is not accepted."
     ),
-    "RATE_LIMITED": ErrorSpec("Too many requests", 429, "Slow down and retry."),
     "NOT_READY": ErrorSpec("Not ready", 503, "A dependency is not ready."),
     "TIMEOUT": ErrorSpec("Timed out", 504, "The operation exceeded its time budget."),
     "STORAGE_FULL": ErrorSpec("Storage is full", 507, "Free space on the vault volume."),
@@ -292,6 +356,7 @@ class DocVaultError(Exception):
         remediation: str | None = None,
         status: int | None = None,
         fields: list[dict[str, str]] | None = None,
+        retry_after: int | None = None,
     ) -> None:
         spec = ERROR_SPECS.get(code)
         if spec is None:
@@ -302,6 +367,7 @@ class DocVaultError(Exception):
         self.detail = detail if detail is not None else spec.detail
         self.remediation = remediation if remediation is not None else spec.remediation
         self.fields = fields or []
+        self.retry_after = retry_after
         super().__init__(f"{code}: {self.detail}")
 
     def to_problem(self, *, instance: str, request_id: str) -> Problem:
