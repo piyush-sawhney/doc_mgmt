@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Cookie, Header, Request, Response
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session as OrmSession
@@ -59,9 +59,16 @@ class PrintLayout(BaseModel):
     cells_per_side: Literal[1, 2, 4, 6, 9] = 1
     duplex: bool = False
     flip_edge: Literal["long", "short"] | None = None
-    margin_mm: int = Field(default=5, ge=0, le=50)
-    gutter_mm: int = Field(default=4, ge=0, le=50)
+    margin_mm: int = Field(default=5, ge=0, le=25)
+    gutter_mm: int = Field(default=4, ge=0, le=12)
     fit_mode: Literal["contain", "fill"] = "contain"
+
+    @field_validator("margin_mm")
+    @classmethod
+    def margin_is_a_five_millimetre_step(cls, value: int) -> int:
+        if value % 5:
+            raise ValueError("margin_mm must be a multiple of 5.")
+        return value
 
     @model_validator(mode="after")
     def validate_duplex(self) -> PrintLayout:

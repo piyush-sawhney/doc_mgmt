@@ -38,7 +38,10 @@ def _page_document(page: dict[str, Any]) -> tuple[Any, int]:
         )["data"]
         data, mime, page = rendered, "image/png", {**page, "page": 1}
     if mime == "application/pdf":
-        document = fitz.open(stream=data, filetype="pdf")
+        try:
+            document = fitz.open(stream=data, filetype="pdf")
+        except (fitz.FileDataError, fitz.EmptyFileError) as exc:
+            raise ValueError("The PDF page is unavailable or malformed.") from exc
         page_no = page["page"] - 1
         if document.is_encrypted or document.is_repaired or page_no < 0 or page_no >= len(document):
             document.close()
@@ -99,6 +102,16 @@ def layout_cells(layout: dict[str, Any]) -> tuple[Any, list[Any]]:
     return page_rect, cells
 
 
+def _centred_rect(container: Any, width: float, height: float) -> Any:
+    """Centre a ``width x height`` box inside ``container``."""
+    return fitz.Rect(
+        container.x0 + (container.width - width) / 2,
+        container.y0 + (container.height - height) / 2,
+        container.x0 + (container.width + width) / 2,
+        container.y0 + (container.height + height) / 2,
+    )
+
+
 def compose_pdf(*, pages: Sequence[dict[str, Any]], layout: dict[str, Any]) -> bytes:
     if not pages:
         raise ValueError("A print job requires at least one page.")
@@ -122,14 +135,22 @@ def compose_pdf(*, pages: Sequence[dict[str, Any]], layout: dict[str, Any]) -> b
                         clip_height = source_rect.width / target_ratio
                         clip.y0 += (source_rect.height - clip_height) / 2
                         clip.y1 = clip.y0 + clip_height
-                    side.show_pdf_page(cell, source_document, source_page, clip=clip)
+                    # Fill crops, but it still never enlarges a small source.
+                    scale = min(1.0, cell.width / clip.width, cell.height / clip.height)
+                    target = _centred_rect(cell, clip.width * scale, clip.height * scale)
+                    side.show_pdf_page(target, source_document, source_page, clip=clip)
                 else:
-                    scale = min(cell.width / source_rect.width, cell.height / source_rect.height)
-                    target = fitz.Rect(
-                        cell.x0 + (cell.width - source_rect.width * scale) / 2,
-                        cell.y0 + (cell.height - source_rect.height * scale) / 2,
-                        cell.x0 + (cell.width + source_rect.width * scale) / 2,
-                        cell.y0 + (cell.height + source_rect.height * scale) / 2,
+                    # Contain never upscales: a small scan is placed at its
+                    # natural size and centred (docs/12 §4).
+                    scale = min(
+                        1.0,
+                        cell.width / source_rect.width,
+                        cell.height / source_rect.height,
+                    )
+                    target = _centred_rect(
+                        cell,
+                        source_rect.width * scale,
+                        source_rect.height * scale,
                     )
                     side.show_pdf_page(target, source_document, source_page, keep_proportion=True)
             finally:

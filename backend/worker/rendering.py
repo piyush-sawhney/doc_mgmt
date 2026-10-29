@@ -25,7 +25,10 @@ ACTIVE_PDF_NAMES = re.compile(
 
 
 def _pdf_document(data: bytes) -> Any:
-    document = fitz.open(stream=data, filetype="pdf")
+    try:
+        document = fitz.open(stream=data, filetype="pdf")
+    except (fitz.FileDataError, fitz.EmptyFileError) as exc:
+        raise ValueError("The PDF is malformed or contains unsupported content.") from exc
     if document.is_encrypted or document.is_repaired or document.page_count < 1:
         document.close()
         raise ValueError("The PDF is encrypted, repaired, or empty.")
@@ -199,6 +202,7 @@ def _validate_office_archive(data: bytes, extension: str) -> None:
                     raise ValueError("DOCX macros and embedded files are not accepted.")
             elif (
                 "content.xml" not in names
+                or "mimetype" not in names
                 or archive.read("mimetype") != b"application/vnd.oasis.opendocument.text"
             ):
                 raise ValueError("The ODT package is incomplete.")

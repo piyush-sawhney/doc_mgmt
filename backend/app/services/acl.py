@@ -716,14 +716,18 @@ def _validate_replacement_grants(
             )
         keys.add(key)
         is_self = _validate_subject(session, grant, actor_id)
-        if is_self and not administrator and existing.get(key) != grant:
+        # Re-submitting an entry exactly as it is stored is not a new grant.
+        # Without this, a delegate could never save an ACL because their own
+        # manage_acl entry would trip the escalation checks below.
+        unchanged = existing.get(key) == grant
+        if is_self and not administrator and not unchanged:
             raise DocVaultError(
                 "VALIDATION_FAILED",
                 detail="You cannot grant permissions to yourself; ask an administrator.",
             )
-        if grant.effect is AclEffect.DENY and not administrator:
+        if grant.effect is AclEffect.DENY and not administrator and not unchanged:
             raise DocVaultError("FORBIDDEN", detail="Only administrators can add deny entries.")
-        if not administrator and grant.capabilities & ~actor_capabilities:
+        if not administrator and grant.capabilities & ~actor_capabilities and not unchanged:
             raise DocVaultError(
                 "FORBIDDEN",
                 detail="You cannot grant capabilities you do not hold.",
@@ -733,6 +737,7 @@ def _validate_replacement_grants(
             and not administrator
             and grant.capabilities & MANAGE_ACL
             and owner_id != actor_id
+            and not unchanged
         ):
             raise DocVaultError(
                 "FORBIDDEN",

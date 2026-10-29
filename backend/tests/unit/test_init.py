@@ -10,7 +10,7 @@ from app.core.errors import DocVaultError
 from app.core.time import now_utc
 from app.vault import audit
 from app.vault.init import create_vault, read_identity
-from app.vault.layout import vault_paths
+from app.vault.layout import atomic_write, vault_paths
 from app.vault.session import VaultManager
 
 
@@ -58,6 +58,36 @@ def test_weak_passphrase_is_refused(tmp_path: Path) -> None:
             app_version="test",
         )
     assert caught.value.code == "PASSPHRASE_POLICY"
+
+
+def test_a_write_failure_leaves_no_half_initialised_vault(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "vault"
+    calls = 0
+
+    def failing_write(path: Path, data: bytes) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("disk full")
+        atomic_write(path, data)
+
+    monkeypatch.setattr("app.vault.init.atomic_write", failing_write)
+
+    with pytest.raises(OSError, match="disk full"):
+        create_vault(
+            root,
+            passphrase="Stapler-Harbor-Cactus-42",
+            display_name="Half",
+            max_file_bytes=1024,
+            app_version="test",
+        )
+
+    paths = vault_paths(root)
+    assert not paths.manifest.exists()
+    assert not paths.kek.exists()
+    assert audit.verify_chain(paths.audit_dir).entries == 0
     assert not (tmp_path / "vault" / "manifest.json").exists()
 
 

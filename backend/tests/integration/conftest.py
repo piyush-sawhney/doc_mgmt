@@ -84,7 +84,7 @@ def pair(pg_admin_dsn: str) -> Iterator[Pair]:
     provision(pg_admin_dsn, database=database, role=role, password=password)
     url = make_url(pg_admin_dsn).set(username=role, password=password, database=database)
     # The subprocess DSN never carries the password; PGPASSFILE supplies it.
-    libpq = url.set(drivername="postgresql", password=None)
+    libpq = make_url(pg_admin_dsn).set(drivername="postgresql", username=role, database=database)
     try:
         yield Pair(
             role=role,

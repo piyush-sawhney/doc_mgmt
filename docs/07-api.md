@@ -453,6 +453,15 @@ there is no client-side PDF assembly.
 | `GET` | `/healthz` | Liveness. No authentication, no details. |
 | `GET` | `/readyz` | Database, vault, and unlock state. `503` when not ready. |
 
+`GET /audit` returns `{items, total}`, newest first. Each item carries `seq`, `ts`, `actor_id`,
+`action`, `object_type`, `object_id`, `outcome`, `source_ip`, `detail`, and `file_month`; `limit`
+is 1–200 (default 50) and `offset` pages the result. `POST /audit/verify` requires the CSRF header
+and returns `{ok, entries, first_bad_seq, detail}`, walking the files rather than the database index.
+
+`GET /vault/status` returns the manifest identity, absolute `root`, `size_bytes`, `blob_count`,
+`audit_entries`, the parsed `last_dump`, `last_dump_encrypted`, `postgres_version`, and
+`lock_state` (`free`, `held`, or `stale`). It never returns key material.
+
 The `/doc-types` tree is what the upload dialog and the filter rail both read, so it is one call,
 not two:
 

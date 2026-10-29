@@ -32,25 +32,25 @@ Last updated: **2026-10-29**, application version **0.1.0**.
 | Area | State | Evidence |
 |---|---|---|
 | Design documents | **Done** | `docs/00`–`16` plus glossary and two READMEs |
-| Backend foundation | **Partial** | Vault creation, crypto, audit, CLI, and live POSIX lock/unlock IPC; Windows IPC and production bootstrap proof remain |
+| Backend foundation | **Partial** | Vault creation, crypto, audit, CLI fault drills, and live POSIX lock/unlock IPC; Windows IPC and production bootstrap proof remain |
 | Database schema and migrations | **Done** | 24 models, Alembic head `7e4c2b9a1f30`, triggers D-1–D-16, and the seeded catalogue |
-| Database provisioning and dumps | **Partial** | Provisioning, encrypted dumps, backup/restore commands, and PostgreSQL integration tests; complete CLI crash/failure proof remains |
-| Authentication, sessions, ACL enforcement | **Partial** | Login/TOTP/session/password routes, admin user/group APIs, ACL resolver, entity/document enforcement, and access audits; the full route matrix remains |
+| Database provisioning and dumps | **Partial** | Provisioning, encrypted dumps, backup/restore, and a CLI `init`→`migrate`→`backup`→`dump-list` drill; CLI restore and Windows bootstrap proof remain |
+| Authentication, sessions, ACL enforcement | **Partial** | Login/TOTP/session/password routes, admin user/group APIs, ACL resolver, entity/document enforcement, access audits, and the documented resolver matrix; the full route-level matrix remains |
 | Entities, documents, versions, upload/download | **Partial** | Encrypted uploads/versions, purge, tags, links, doc-type CRUD, search, one-use range downloads, ACL filters, and structural PDF inspection |
-| Render worker and previews | **Partial** | Isolated Linux worker, encrypted renditions/cache, recipes, tickets, Office intake, and PDF validation; non-Linux isolation and real LibreOffice conversion remain unverified |
-| Print composition | **Partial** | In-memory PDF jobs, authorization, persistence, audit, metadata, and interrupted-job recovery; preset API and golden-layout coverage remain |
+| Render worker and previews | **Partial** | Isolated Linux worker, encrypted renditions/cache, recipes, tickets, Office intake, PDF validation, and a hostile-input corpus; non-Linux isolation and real LibreOffice conversion remain unverified |
+| Print composition | **Done** | In-memory PDF jobs, authorization, persistence, audit, metadata, interrupted-job recovery, and the documented layout/no-upscale contract are covered; presets are built-in values, not a server resource |
 | Frontend | **Not started** | No `frontend/`; Node and npm are not installed on this dev host |
 | Packaging and Windows install | **Deferred** | Packaging and production Windows installation are outside this backend slice |
-| Unit tests | **Passing for current worktree** | **161 passed** |
-| Integration tests | **Passing for current worktree** | **65 passed** against PostgreSQL 18.6 |
+| Unit tests | **Passing for current worktree** | **204 passed** |
+| Integration tests | **Passing for current worktree** | **97 passed** against PostgreSQL 18.6 |
 | Lint and type checks | **Passing for current worktree** | `ruff check backend`, `mypy app` (run from `backend/`) |
 
 The backend API and worker paths for authentication, ACLs, entities, documents, previews, Office
-intake, and print composition are implemented and covered by the current suite. The backend is
-still a **partial product slice**: Windows production support, full CLI crash/failure drills,
-complete ACL-matrix and print-layout coverage, custom print presets, and a real LibreOffice
-conversion run remain open. The frontend and packaging are intentionally outside this backend
-completion scope.
+intake, print composition, audit reads, and vault status are implemented and covered by the
+current suite. The backend is still a **partial product slice**: Windows production support, the
+route-level ACL matrix, global `/search`, mutable `/settings`, the remaining operational commands
+(`verify`, `rotate-*`, `salvage`), and a real LibreOffice conversion run remain open. The frontend
+and packaging are intentionally outside this backend completion scope.
 
 ## 3. What runs today
 
@@ -146,6 +146,8 @@ It also refuses to start against a database belonging to another vault or a newe
 | `/api/v1/documents` | Encrypted PDF/JPEG/PNG and Office uploads, versioning, metadata, tags, entity links, bounded title search, and ACL-filtered collections |
 | `/api/v1/documents/{id}/*`, `/api/v1/downloads/{ticket}` | ACL-filtered reads, soft delete/restore/purge, one-use range-capable download tickets, render settings, and rendition tickets |
 | `/api/v1/print-jobs/*` | ACL-checked in-memory PDF composition and job metadata; terminal outcomes are audited |
+| `/api/v1/audit`, `/api/v1/audit/verify` | Auditor/admin index queries and a full file-chain walk that names the first bad `seq` |
+| `/api/v1/vault/status` | Admin view of identity, size, blob/audit counts, `LATEST`, PostgreSQL version, and lock state; no key material |
 
 PDFs are structurally inspected in the isolated worker in addition to the upload-time active-content
 screen. Office archive validation rejects malformed packages and external relationships; actual
@@ -198,7 +200,7 @@ and SQLite is never used ([14 §8](14-development.md)).
 |---|---|---|---|
 | `app/vault/layout.py` | [03 §2](03-vault-format.md), [03 §7](03-vault-format.md) | **Partial** | Layout, permissions, atomic writes, symlink/network/rename/fsync/casing probes. The Windows filesystem branch is code-reviewed, not executed |
 | `app/vault/manifest.py` | [03 §3](03-vault-format.md) | **Partial** | Build, sign, verify, load, schema-version bump, unknown-field preservation. No operator-facing edit command |
-| `app/vault/audit.py` | [03 §10](03-vault-format.md) | **Partial** | Monthly JSONL append and full-chain verification. No anchor file generation and no database mirror |
+| `app/vault/audit.py` | [03 §10](03-vault-format.md) | **Partial** | Monthly JSONL append and full-chain verification. No anchor file generation |
 | `app/vault/lock.py` | [03 §11](03-vault-format.md) | **Done** | Exclusive create, 5-second heartbeat, 30-second staleness, audited forced takeover |
 | `app/vault/init.py` | [09 §1](09-flows.md) | **Partial** | Vault identity and key wrapping only; TLS and database bootstrap are orchestrated by the CLI |
 | `app/vault/dump.py` | [03 §9](03-vault-format.md) | **Partial** | DVD1 chunked authenticated encryption/decryption; integrated with backup operations |
@@ -210,14 +212,15 @@ and SQLite is never used ([14 §8](14-development.md)).
 | Module | Design reference | State | Notes |
 |---|---|---|---|
 | `app/api/health.py` | [07 §1](07-api.md) | **Done** | `/healthz` and `/readyz` |
-| `app/main.py` | [02 §8](02-architecture.md) | **Done for the implemented backend** | App factory mounts API routers and recovers interrupted print jobs at startup |
-| `app/cli.py` | [08 §1](08-ops.md) | **Partial** | `init`, `status`, `doctor`, live `unlock`/`lock`, `migrate`, `serve`, backup/restore/list, and `user create`; verify, rotate, salvage, Windows IPC, and full CLI failure drills remain |
+| `app/main.py` | [02 §8](02-architecture.md) | **Done for the implemented backend** | App factory mounts API routers, including audit/vault views, and recovers interrupted print jobs at startup |
+| `app/cli.py` | [08 §1](08-ops.md) | **Partial** | `init`, `status`, `doctor`, live `unlock`/`lock`, `migrate`, `serve`, backup/restore/list, and `user create`; init rollback and the init→migrate→backup→list path are drilled. Verify, rotate, salvage, CLI restore in anger, and Windows IPC remain |
 | `app/api/entities.py`, `app/services/entities.py` | [07 §4](07-api.md), [06](06-rbac-acl.md) | **Partial** | Encrypted entity/person/identifier CRUD, blind indexes, duplicate-identifier transaction locks, ETags, masked identifiers, and ACL-gated routes |
 | `app/api/documents.py` | [07 §5](07-api.md) | **Partial** | Doc-type CRUD, tags/links/search, encrypted uploads/versions, purge, range downloads, and Office conversion; full route ACL matrix and real converter proof remain |
 | `app/api/render.py`, `app/render/` | [11](11-frontend.md), [10 ADR-036/038](10-decisions.md) | **Partial** | Encrypted rendition cache, render settings, one-use tickets, isolated PDF/image rendering, and Office conversion; isolation is Linux-only |
-| `app/api/printing.py`, `worker/printing.py` | [12](12-printing.md) | **Partial** | In-memory composition, page ranges, authorization, job persistence/audit, saved recipes, and startup recovery; presets and exhaustive golden-layout tests remain |
+| `app/api/printing.py`, `worker/printing.py` | [12](12-printing.md) | **Done** | In-memory composition, page ranges, authorization, job persistence/audit, saved recipes, startup recovery, and the documented paper/grid/margin/no-upscale contract |
+| `app/api/operations.py` | [07 §6](07-api.md) | **Done** | Auditor/admin audit index and filters, chain verification, and admin vault status with no key material |
 | `app/services/` | [06](06-rbac-acl.md) | **Partial** | Auth, account administration, transactional audit, ACL scope resolution, SQL-filtered lists, owner floor, and access logging; complete route-level ACL matrix remains |
-| `worker/` | [02 §8](02-architecture.md) | **Partial** | Pipe worker for structural PDF inspection, rendering, Office conversion, and printing; sandboxed with bubblewrap on Linux only |
+| `worker/` | [02 §8](02-architecture.md) | **Partial** | Pipe worker for structural PDF inspection, rendering, Office conversion, and printing, with a hostile-input corpus; sandboxed with bubblewrap on Linux only |
 | `frontend/` | [11](11-frontend.md) | **Not started** | Node and npm are absent on this development host |
 
 ### 4.5 Database
@@ -242,7 +245,7 @@ and SQLite is never used ([14 §8](14-development.md)).
 
 ## 5. Test evidence
 
-### 5.1 Unit suite — 161 passed
+### 5.1 Unit suite — 204 passed
 
 | File | What it proves |
 |---|---|
@@ -254,7 +257,7 @@ and SQLite is never used ([14 §8](14-development.md)).
 | `test_lock.py` | Second writer refused, release, heartbeat record, stale detection, forced takeover, forced-takeover audit |
 | `test_layout.py` | Layout creation, atomic write, private modes, symlink rejection, network filesystem rejection, relative root rejection, fan-out paths, idempotence |
 | `test_config.py` | Development shape, unknown keys, remote DSN refusal, relative root refusal, missing file, comment-preserving root rewrite |
-| `test_init.py` | Vault identity, second-init refusal, weak passphrase refusal, unlock, wrong-passphrase audit, status without unlock, lock release |
+| `test_init.py` | Vault identity, second-init refusal, weak passphrase refusal, a write-failure rollback that leaves no half-initialised vault, unlock, wrong-passphrase audit, status without unlock, lock release |
 | `test_credentials.py` | Credential path beside the config, `0600` round trip, missing and damaged files reported as `DB_CREDENTIAL_UNREADABLE`, production refused on non-Windows |
 | `test_http.py` | `/healthz`, locked `/readyz`, ready `/readyz`, request-ID echo, problem documents, unknown route |
 | `test_dump.py` | DVD1 header and chunk boundaries, authentication, tampering, truncation, wrong key, and no partial plaintext |
@@ -262,12 +265,14 @@ and SQLite is never used ([14 §8](14-development.md)).
 | `test_acl.py` | Allow and deny closure for the six capability bits |
 | `test_auth.py` | Username normalization, password rules, login throttle, and TOTP primitives |
 | `test_control.py` | Private POSIX control socket, lock/unlock/status handling, and socket cleanup |
-| `test_render_worker.py` | Isolated worker protocol, hostile Office archives, PDF inspection, rendition rendering, and print layout composition |
+| `test_render_worker.py` | Isolated worker protocol, Office archive validation, PDF inspection, rendition rendering, and print layout composition |
+| `test_render_hostile.py` | Empty, truncated, encrypted, active, embedded-file, oversized, and MIME-mismatched inputs are refused; transparency flattens to white; macro, zip-bomb, and incomplete Office archives are rejected |
+| `test_print_contract.py` | A4/paper geometry, row-major grids, landscape, all paper/grid combinations, documented margin/gutter limits, duplex pairing, no upscaling in contain or fill, and fill cropping |
 
 The unit suite is deliberately at the crypto and filesystem boundary. It proves the contracts
 that are cheapest to get wrong, not that the product works end to end.
 
-### 5.2 Integration suite — 65 passed
+### 5.2 Integration suite — 97 passed
 
 Every test creates a fresh database on the PostgreSQL 18.6 throwaway cluster, runs the Alembic
 migration, and drops the database. The fixture skips, rather than falls back to SQLite, when the
@@ -284,10 +289,14 @@ cluster is absent.
 | `test_acl.py` | Entity-scope union/deny behavior, filtered listing, owner floor, and durable denial audit |
 | `test_entities.py` | Encrypted entity and identifier fields, identifier masking, duplicate-ID rejection, and the mandatory individual self-link |
 | `test_documents.py` | Entity API ETags/masking, ACL-checked linked upload, encrypted blob persistence, idempotency replay, audited download, render cache, print jobs, and interrupted-job recovery |
+| `test_acl_matrix.py` | Group allow/deny, immediate membership removal, upward/downward closure, multi-entity deny-wins, owner floor, restricted printing, admin exemption, break-glass, auditor read denial, soft-delete hiding, visible counts, entity ACL admin-only, self/privilege escalation, non-owner `manage_acl`, deny-admin-only, and before/after audit |
+| `test_cli.py` | `init` writes the vault and its root, a second init and a weak/mismatched passphrase leave the vault untouched, `--reuse-vault` names the missing vault, and a real `init`→`migrate`→`backup`→`dump-list` run provisions, seeds, and dumps |
+| `test_operations.py` | Admin/auditor audit listing and filters, reader denial, chain verification before and after tampering, CSRF on `POST /audit/verify`, and admin-only vault status with no key material |
 
 The full suite, including auth, administration, ACL, entity, document upload/download, rendering,
-print composition, bootstrap, and encrypted backup/restore tests, passed: **226 passed** against
-PostgreSQL 18.6 on 2026-10-29. Ruff lint/format and strict mypy checks also pass.
+print composition, audit/vault views, bootstrap, encrypted backup/restore, and CLI drills, passed:
+**301 passed** against PostgreSQL 18.6 on 2026-10-29. Ruff lint/format and strict mypy checks also
+pass.
 
 ### 5.3 S2a manually verified before the S2b worktree changes on 2026-10-28
 
@@ -316,17 +325,17 @@ base, and upgrade again; `alembic check` reports **No new upgrade operations det
 
 | Gap | Consequence |
 |---|---|
-| Full ACL matrix across entity/document CRUD, including all group/deny combinations | Core allow/deny paths and a linked upload are tested; the full permission matrix remains |
-| Full CLI `init`/`migrate` dump hooks and initial `user create` failure paths | Backup components pass PostgreSQL integration tests, but the complete CLI flow has not been fault-injected end to end |
+| Route-level ACL matrix across every entity/document/render/print endpoint | The resolver matrix in `06` §10 is covered; each route's wiring is tested only on its principal path |
+| CLI `restore`, `user create`, and Windows `init` | `init`→`migrate`→`backup`→`dump-list` and init rollback are exercised; restore is covered at the function level, and the Windows DPAPI path is unexecuted |
 | Windows filesystem, path handling, and lock/unlock IPC | The production target is unexercised; local control IPC is POSIX Unix-socket only |
 | DPAPI credential sealing | The ctypes call is written and reviewed, never executed; the Linux file path is what the tests cover |
 | `serve` against a mismatched database | The identity check is exercised through `doctor` and the integration tests, not by starting the HTTPS listener |
 | Concurrent processes and heartbeat failure | Stale-lock takeover is tested by writing a file, not by killing a live writer |
 | Large streamed uploads and disk-full behaviour | Streaming is tested with small payloads and an enforced size cap, not a 100 MB document or disk-full fault |
-| Hostile-input corpus and compressed PDF active-content coverage | Structural inspection runs in the isolated worker, but the hostile-input corpus is not comprehensive |
 | Rendition cleanup failures and orphaned ciphertext after filesystem errors | Database/cache behavior and ordinary eviction are tested; disk-full and unlink fault injection remain |
-| Print presets and exhaustive golden-page comparisons | Composition is implemented and layout behavior has focused tests; preset management and full grid/paper golden hashes remain |
-| Crash injection during `init`, blob write, or dump | Cleanup paths are reasoned about, not fault-injected |
+| Global metadata search and mutable settings | `docs/07` §6 names `GET /search` and `GET`/`PUT /settings`; the contracts do not define a response shape or an allow-list, so neither route is built |
+| Operational `verify`, `rotate-passphrase`, `rotate-vmk`, and `salvage` commands | `status` and `doctor` cover read-only inspection; the mutating operator commands in `docs/08` §5 are not implemented |
+| Crash injection during blob write or dump | `init` rollback is fault-injected; blob and dump writes are covered by tamper/truncation tests, not by an injected filesystem failure |
 | TLS handshake with a real client | Certificates are generated and fingerprinted, not used by a browser |
 | Query behaviour under load | Functional database paths are covered; there are no volume or performance tests |
 | Frontend | No code; excluded from the backend completion scope |
@@ -338,22 +347,25 @@ allowed only while this table says so; a gap without a slice is a defect.
 
 | ID | Design expects | Current build | Resolution |
 |---|---|---|---|
-| IMP-01 | `docvault init` provisions the role, database, schema, seed catalogue, and first dump ([08 §2](08-ops.md), [09 §1](09-flows.md)) | Provisioning and dump hooks are wired and integration-tested; full CLI failure injection remains | **Partial; needs CLI fault drills** |
+| IMP-01 | `docvault init` provisions the role, database, schema, seed catalogue, and first dump ([08 §2](08-ops.md), [09 §1](09-flows.md)) | A CLI drill now provisions/adopts a real pair, seeds, writes the first dump, and exercises rollback, refusal, and passphrase failures | **Closed (2026-10-29, Linux); Windows bootstrap is IMP-13** |
 | IMP-02 | A running service can be unlocked and locked through IPC ([08 §7](08-ops.md)) | Live local control uses a private POSIX Unix socket, revokes sessions on lock, and drops in-memory keys | **Done on Linux; Windows named-pipe equivalent deferred to S8** |
 | IMP-03 | Automatic unlock uses DPAPI/keyring when opted in ([15 §6.3](15-production-setup.md)) | Automatic vault-key unlock is not implemented; `serve` requires interactive unlock | **Deferred to S8** |
 | IMP-04 | Schema, Alembic migrations, seeded document types, constraints, triggers, and indexes ([04](04-data-model.md)) | All 24 tables and the seed catalogue exist at head `7e4c2b9a1f30`; downgrade and upgrade tests pass | **Closed (S1)** |
-| IMP-05 | Encrypted `DVD1` dumps, `LATEST`, backup, restore, and pre-migration dumps ([03 §9](03-vault-format.md), [08 §3–4](08-ops.md)) | Format, commands, hooks, and PostgreSQL backup/restore integration tests pass; full CLI crash drills remain | **Implemented; final CLI fault validation open** |
+| IMP-05 | Encrypted `DVD1` dumps, `LATEST`, backup, restore, and pre-migration dumps ([03 §9](03-vault-format.md), [08 §3–4](08-ops.md)) | Format, commands, hooks, PostgreSQL backup/restore, and CLI backup/list drills pass; CLI `restore` remains function-level only | **Implemented; CLI restore drill open** |
 | IMP-06 | Database credential stored in DPAPI or the OS keyring, never in TOML ([02 §6.3](02-architecture.md)) | Linux development uses a `0600` credential file; DPAPI is written but unexecuted and keyring is not wired | **Deferred to S8 production proof** |
 | IMP-07 | `doctor` checks the live database and its version ([08 §1](08-ops.md)) | Credential, server major, identity, and schema checks are covered | **Closed (S2a)** |
-| IMP-08 | Auth, sessions, CSRF, lockout, roles, and the single ACL gate ([06](06-rbac-acl.md), [07 §2](07-api.md)) | Routes use ACL gates and durable access audits; principal cases pass, but the complete group/deny matrix is not covered | **Partial; remaining route-matrix tests** |
-| IMP-09 | Entities, persons, identifiers, documents, versions, uploads, downloads, and audit writes ([07 §4–5](07-api.md)) | CRUD, doc types, tags/links/search, encrypted uploads/versions, purge, range downloads, and structural PDF inspection are implemented | **Implemented; ACL matrix and hostile-input corpus remain** |
+| IMP-08 | Auth, sessions, CSRF, lockout, roles, and the single ACL gate ([06](06-rbac-acl.md), [07 §2](07-api.md)) | Routes use ACL gates and durable access audits; the documented resolver matrix is covered, but each route is not yet exercised under every scope | **Partial; remaining route-level matrix** |
+| IMP-09 | Entities, persons, identifiers, documents, versions, uploads, downloads, and audit writes ([07 §4–5](07-api.md)) | CRUD, doc types, tags/links/search, encrypted uploads/versions, purge, range downloads, structural PDF inspection, and the hostile-input corpus are implemented | **Implemented; route-level ACL matrix remains** |
 | IMP-10 | Office intake converts once at ingest; previews are encrypted renditions ([10 ADR-038](10-decisions.md), [11](11-frontend.md)) | Linux-isolated worker, encrypted previews/cache, and converter wiring are implemented; actual LibreOffice execution and non-Linux sandbox remain unverified | **Partial; platform/converter validation** |
-| IMP-11 | Print composition produces one PDF in memory, with no stored artifact ([12](12-printing.md)) | Composition, job records, terminal audit, crash recovery, and print authorization are implemented | **Partial; preset API and exhaustive golden-layout tests** |
+| IMP-11 | Print composition produces one PDF in memory, with no stored artifact ([12](12-printing.md)) | Composition, job records, terminal audit, crash recovery, print authorization, and the documented paper/grid/margin/no-upscale contract are covered; presets are built-in values and `07` defines no preset route | **Closed (2026-10-29)** |
 | IMP-12 | React frontend served from the same origin ([11](11-frontend.md)) | No frontend | **Deferred; outside backend scope** |
 | IMP-13 | Windows production installation, service, MSI, and filesystem behaviour ([15](15-production-setup.md)) | Only Linux development paths have been executed | **Deferred; outside backend scope** |
 | IMP-14 | Python `3.14.10` ([02 §6.1](02-architecture.md)) | Local interpreter is `3.14.4`; no feature depends on the patch level | **Deferred to release build** |
 | IMP-15 | `doctor` is a read-only inspection | Its filesystem probe writes short-lived probe files under `tmp/`. It never creates missing vault folders or modifies content, but the filesystem must be writable | Documented behaviour; no action unless a read-only doctor is required |
 | IMP-16 | The design is the base for code | `backend/app/crypto/blobs.py` was moved to `backend/app/vault/blobs.py` to match the layout in [02 §8](02-architecture.md) | Closed 2026-10-28 |
+| IMP-17 | `GET /audit`, `POST /audit/verify`, and `GET /vault/status` ([07 §6](07-api.md)) | Implemented with role checks, CSRF on the POST, file-chain verification, and no key material in the vault response | **Closed (2026-10-29)** |
+| IMP-18 | `GET /search` and `GET`/`PUT /settings` ([07 §6](07-api.md)) | Not built: `07` defines neither the combined result shape nor the settings allow-list | **Deferred until the contract names both** |
+| IMP-19 | `docvault verify`, `rotate-passphrase`, `rotate-vmk`, and `salvage` ([08 §5–6](08-ops.md)) | `status`/`doctor` cover read-only inspection; the mutating commands are not implemented | **Deferred to the operational slice** |
 
 ### 6.1 Known limits carried from the design
 
@@ -525,3 +537,4 @@ If the product owner answers differently, the answer changes S5 and S6, not the 
 | 2026-10-28 | S2b work-in-progress status: encrypted dumps and backup/restore wiring are present. The complete backend suite passes (125 unit, 59 integration); CLI `init`/`migrate` dump orchestration remains unverified. |
 | 2026-10-29 | Earlier S3/S4 checkpoint: entity and document routes were ACL-gated; version appends, request-bound idempotency, single byte-range downloads, category/date filters, and admin purge with legal-hold/retention guards were implemented. Remaining gaps at that checkpoint are closed or updated in the later entry below. |
 | 2026-10-29 | Backend completion pass: added doc-type CRUD and ETag/tree guards, live POSIX lock/unlock IPC, isolated rendering/Office intake, print composition and interrupted-job recovery. Full suite: 226 tests; Ruff and mypy pass. Windows IPC/sandboxing, custom print presets, exhaustive ACL/golden-layout tests, and CLI failure drills remain explicitly open. |
+| 2026-10-29 | Backend gap closure: print layout limits and no-upscale composition, a hostile-input worker corpus, the `06` §10 ACL resolver matrix, CLI init/migrate/backup/list drills with rollback, and audit/vault-status routes. Re-saving a delegate's unchanged ACL no longer trips escalation checks. Full suite: 301 tests; Ruff and mypy pass. `/search`, `/settings`, and the mutating operator commands are recorded as contract-deferred in IMP-18/19. |
